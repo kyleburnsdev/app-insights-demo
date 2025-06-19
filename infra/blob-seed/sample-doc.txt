@@ -1,0 +1,5 @@
+Sample document for mortgage application.
+
+This is a placeholder PDF or text file to be uploaded to Azure Blob Storage as part of the seed data.
+
+You can replace this with a real PDF or DOCX file for demo purposes.

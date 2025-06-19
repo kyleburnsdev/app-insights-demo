@@ -1,0 +1,47 @@
+# Global
+.env
+*.env
+.env.*
+
+# Node/React (web-ui)
+web-ui/node_modules/
+web-ui/build/
+web-ui/.env
+web-ui/.env.*
+web-ui/npm-debug.log*
+web-ui/yarn-debug.log*
+web-ui/yarn-error.log*
+web-ui/.pnp*
+web-ui/.cache/
+
+# Java (customer-service)
+customer-service/target/
+customer-service/.classpath
+customer-service/.project
+customer-service/.settings/
+customer-service/.idea/
+customer-service/.vscode/
+customer-service/.env
+customer-service/.env.*
+
+# .NET (loan-processing-service)
+loan-processing-service/bin/
+loan-processing-service/obj/
+loan-processing-service/.vs/
+loan-processing-service/.vscode/
+loan-processing-service/.env
+loan-processing-service/.env.*
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Misc
+*.swp
+*.swo

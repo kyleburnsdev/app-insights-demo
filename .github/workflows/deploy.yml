@@ -1,0 +1,167 @@
+name: Deploy Mortgage Demo to Azure
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_SQL_ADMIN_USERNAME: ${{ secrets.AZURE_SQL_ADMIN_USERNAME }}
+      AZURE_SQL_ADMIN_PASSWORD: ${{ secrets.AZURE_SQL_ADMIN_PASSWORD }}
+      AZURE_CONTAINER_REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+      AZURE_CONTAINER_REGISTRY_USERNAME: ${{ secrets.AZURE_CONTAINER_REGISTRY_USERNAME }}
+      AZURE_CONTAINER_REGISTRY_PASSWORD: ${{ secrets.AZURE_CONTAINER_REGISTRY_PASSWORD }}
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+      RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      LOCATION: ${{ secrets.AZURE_LOCATION }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to Azure Container Registry
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ env.AZURE_CONTAINER_REGISTRY }}
+          username: ${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }}
+          password: ${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }}
+
+      - name: Build and push Loan Processing Service (.NET)
+        run: |
+          cd loan-processing-service
+          dotnet publish -c Release -o out
+          docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} .
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }}
+
+      - name: Build and push Customer Service (Java)
+        run: |
+          cd customer-service
+          ./mvnw package -DskipTests || mvn package -DskipTests
+          docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} .
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }}
+
+      - name: Build and push Web UI (React)
+        run: |
+          cd web-ui
+          npm install
+          npm run build
+          docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} .
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}
+
+      - name: Deploy infrastructure and container apps (Bicep)
+        run: |
+          az deployment group create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters \
+              sqlAdminUsername=${{ env.AZURE_SQL_ADMIN_USERNAME }} \
+              sqlAdminPassword=${{ env.AZURE_SQL_ADMIN_PASSWORD }} \
+              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
+              customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
+              webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}
+
+      - name: Get Managed Identity Principal ID
+        id: get_identity
+        run: |
+          principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
+          echo "principal_id=$principal_id" >> $GITHUB_OUTPUT
+
+      - name: Get SQL Server FQDN
+        id: get_sql_fqdn
+        run: |
+          sql_fqdn=$(az sql server show --name $(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.sqlServerName.value' -o tsv) --resource-group ${{ env.RESOURCE_GROUP }} --query fullyQualifiedDomainName -o tsv)
+          echo "sql_fqdn=$sql_fqdn" >> $GITHUB_OUTPUT
+
+      - name: Create Managed Identity User in SQL DB
+        env:
+          AZURE_SQL_ADMIN_USERNAME: ${{ env.AZURE_SQL_ADMIN_USERNAME }}
+          AZURE_SQL_ADMIN_PASSWORD: ${{ env.AZURE_SQL_ADMIN_PASSWORD }}
+        run: |
+          sql_server_name=$(az sql server list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?contains(name, 'sqlserver')].name | [0]" -o tsv)
+          db_name=$(az sql db list --server $sql_server_name --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          principal_id=${{ steps.get_identity.outputs.principal_id }}
+          # Create user and grant roles
+          az sql db execute --admin-user $AZURE_SQL_ADMIN_USERNAME --admin-password $AZURE_SQL_ADMIN_PASSWORD \
+            --name $db_name --server $sql_server_name --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "CREATE USER [appidentity] FROM EXTERNAL PROVIDER; ALTER ROLE db_datareader ADD MEMBER [appidentity]; ALTER ROLE db_datawriter ADD MEMBER [appidentity];"
+
+      - name: Create Blob Storage Container
+        run: |
+          storage_account=$(az storage account list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          az storage container create --account-name $storage_account --name container-name --auth-mode login
+
+      - name: Assign Storage and SQL roles to system-assigned managed identities
+        run: |
+          # Get resource IDs
+          storage_id=$(az storage account show --name ${{ secrets.AZURE_STORAGE_ACCOUNT_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query id -o tsv)
+          sql_server_id=$(az sql server show --name ${{ secrets.AZURE_SQL_SERVER_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query id -o tsv)
+          sql_db_id=$(az sql db show --name ${{ secrets.AZURE_SQL_DATABASE_NAME }} --server ${{ secrets.AZURE_SQL_SERVER_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query id -o tsv)
+
+          # Assign Storage Blob Data Contributor to each container app identity
+          for app in loan-processing-service customer-service web-ui; do
+            principal_id=$(az containerapp show --name $app --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
+            az role assignment create --assignee $principal_id --role "Storage Blob Data Contributor" --scope $storage_id
+          done
+
+          # Assign SQL roles (example: db_datareader, db_datawriter) to loan-processing-service and customer-service
+          for app in loan-processing-service customer-service; do
+            principal_id=$(az containerapp show --name $app --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
+            # This step assumes you have a script or process to create the contained user in SQL DB for the principal_id
+            echo "Assign SQL roles for $app (principal_id: $principal_id) - see documentation for contained user creation."
+          done
+
+      - name: Create Application Insights Release Annotation
+        run: |
+          az monitor app-insights annotation create \
+            --app ${{ secrets.APPINSIGHTS_RESOURCE_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --annotation-name "Release" \
+            --annotation-description "Release deployed from $GITHUB_REPOSITORY at commit $GITHUB_SHA (run $GITHUB_RUN_NUMBER)" \
+            --tags "sha=${GITHUB_SHA}" "run_id=${GITHUB_RUN_ID}" "workflow=${GITHUB_WORKFLOW}"
+
+      - name: Copy JMeter file for Load Test
+        run: |
+          mkdir -p ${{ github.workspace }}/load-testing-artifacts
+          cp ./load-testing/mortgage-demo.jmx ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx
+
+      - name: Run Azure Load Test (smoke test)
+        id: loadtest
+        run: |
+          # Get FQDNs from deployment outputs
+          loan_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.loanProcessingFqdn.value' -o tsv)
+          customer_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.customerServiceFqdn.value' -o tsv)
+
+          # Run Azure Load Test with JMeter file and host variables
+          az load test-run create \
+            --load-test-resource mortgage-loadtest \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --test-plan ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
+            --env-variables LOAN_API_HOST=$loan_fqdn CUSTOMER_API_HOST=$customer_fqdn \
+            --display-name "Smoke Test"
+
+      - name: Azure Logout
+        run: az logout
