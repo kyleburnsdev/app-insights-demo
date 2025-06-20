@@ -1,3 +1,5 @@
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
@@ -17,9 +19,11 @@ namespace LoanProcessingService.Controllers
     public class LoansController : ControllerBase
     {
         private readonly IConfiguration _config;
-        public LoansController(IConfiguration config)
+        private readonly TelemetryClient _telemetryClient;
+        public LoansController(IConfiguration config, TelemetryClient telemetryClient)
         {
             _config = config;
+            _telemetryClient = telemetryClient;
         }
 
         // Define Polly policies
@@ -36,32 +40,47 @@ namespace LoanProcessingService.Controllers
         {
             var loans = new List<object>();
             var connStr = _config.GetConnectionString("DefaultConnection");
-            await circuitBreakerPolicy.ExecuteAsync(async () =>
+            string userId = HttpContext.User?.Identity?.Name ?? HttpContext.Request.Headers["X-User-Id"].FirstOrDefault() ?? "anonymous";
+            string correlationId = HttpContext.Request.Headers["Request-Id"].FirstOrDefault() ?? HttpContext.TraceIdentifier;
+            _telemetryClient.TrackEvent("LoanLookupRequested", new Dictionary<string, string> { { "userId", userId }, { "correlationId", correlationId } });
+            try
             {
-                await retryPolicy.ExecuteAsync(async () =>
+                await circuitBreakerPolicy.ExecuteAsync(async () =>
                 {
-                    using (var conn = new SqlConnection(connStr))
+                    await retryPolicy.ExecuteAsync(async () =>
                     {
-                        await conn.OpenAsync();
-                        var cmd = new SqlCommand("SELECT LoanId, CustomerId, Amount, Status FROM Loans", conn);
-                        using (var reader = await cmd.ExecuteReaderAsync())
+                        using (var conn = new SqlConnection(connStr))
                         {
-                            while (await reader.ReadAsync())
+                            await conn.OpenAsync();
+                            var cmd = new SqlCommand("SELECT LoanId, CustomerId, Amount, Status FROM Loans", conn);
+                            using (var reader = await cmd.ExecuteReaderAsync())
                             {
-                                var loanId = reader.GetInt32(0);
-                                var customerId = reader.GetInt32(1);
-                                var amount = reader.GetDecimal(2);
-                                var status = reader.GetString(3);
+                                while (await reader.ReadAsync())
+                                {
+                                    var loanId = reader.GetInt32(0);
+                                    var customerId = reader.GetInt32(1);
+                                    var amount = reader.GetDecimal(2);
+                                    var status = reader.GetString(3);
 
-                                // N+1 query: fetch customer for each loan
-                                var customer = await GetCustomerById(conn, customerId);
-                                loans.Add(new { loanId, customer, amount, status });
+                                    // N+1 query: fetch customer for each loan
+                                    var customer = await GetCustomerById(conn, customerId);
+                                    loans.Add(new { loanId, customer, amount, status });
+                                }
                             }
                         }
-                    }
+                    });
                 });
-            });
-            return Ok(loans);
+                _telemetryClient.TrackEvent("LoanLookupSuccess", new Dictionary<string, string> { { "userId", userId }, { "correlationId", correlationId } });
+                _telemetryClient.GetMetric("LoanLookupSuccess").TrackValue(1);
+                return Ok(loans);
+            }
+            catch (Exception ex)
+            {
+                _telemetryClient.TrackEvent("LoanLookupError", new Dictionary<string, string> { { "userId", userId }, { "correlationId", correlationId }, { "error", ex.Message } });
+                _telemetryClient.GetMetric("LoanLookupError").TrackValue(1);
+                _telemetryClient.TrackException(ex);
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
 
         private async Task<object> GetCustomerById(SqlConnection conn, int customerId)
