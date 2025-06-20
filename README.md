@@ -33,9 +33,9 @@ flowchart TD
     end
 
     subgraph ContainerApps
-        WebUI[Web UI (React)]
-        Loan[Loan Processing Service (.NET)]
-        Cust[Customer Service (Java)]
+        WebUI[Web UI\nReact]
+        Loan[Loan Processing Service\n.NET]
+        Cust[Customer Service\nJava]
     end
 
     User --> WebUI
@@ -145,9 +145,9 @@ az monitor app-insights component list --resource-group <RESOURCE_GROUP> --query
 ```mermaid
 graph TD
     subgraph Microservices
-        Loan[Loan Processing Service (.NET)]
-        Cust[Customer Service (Java)]
-        WebUI[Web UI (React)]
+        Loan[Loan Processing Service\n.NET]
+        Cust[Customer Service\nJava]
+        WebUI[Web UI\nReact]
     end
     SQL[Azure SQL Database]
     Blob[Azure Blob Storage]
