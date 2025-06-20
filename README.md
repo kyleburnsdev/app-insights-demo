@@ -114,29 +114,15 @@ az acr credential show --name <ACR_NAME>
 
 #### AZURE_RESOURCE_GROUP
 
-Use the name of your resource group (string).
+Set this as a repository variable (not a secret) in GitHub. It is the name of your resource group (string).
 
 #### AZURE_LOCATION
 
-Use the Azure region you want to deploy to (e.g., `eastus`).
+Set this as a repository variable (not a secret) in GitHub. It is the Azure region you want to deploy to (e.g., `eastus`).
 
 #### AZURE_SQL_ADMIN_USERNAME / AZURE_SQL_ADMIN_PASSWORD
 
-Choose a username and password for your Azure SQL admin. If you want to retrieve the current values:
-
-```sh
-az sql server show --name <SQL_SERVER_NAME> --resource-group <RESOURCE_GROUP> --query "administratorLogin" --output tsv
-```
-
-- Set the password you used when creating the SQL server as `AZURE_SQL_ADMIN_PASSWORD`.
-
-#### APPINSIGHTS_RESOURCE_NAME
-
-Use the name of your Application Insights resource. To list Application Insights resources:
-
-```sh
-az monitor app-insights component list --resource-group <RESOURCE_GROUP> --query "[].name" --output tsv
-```
+Choose a username and password for your Azure SQL admin. Set the password you used when creating the SQL server as `AZURE_SQL_ADMIN_PASSWORD`.
 
 ---
 
@@ -174,7 +160,7 @@ graph TD
 ## Troubleshooting & Tips
 
 - If a deployment step fails, check the GitHub Actions logs for details.
-- Ensure all secrets are set and correct.
+- Ensure all required secrets and variables are set and correct.
 - For local development, you can build and run each service using Docker Compose or individual Docker commands.
 - Health endpoints and readiness probes are implemented for all services.
 - Managed identities are used for secure access to SQL and Blob Storage—no secrets in code.

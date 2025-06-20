@@ -279,3 +279,4 @@ output containerEnvName string = containerEnv.name
 output loadTestName string = loadTest.name
 output loanProcessingFqdn string = loanProcessingApp.properties.configuration.ingress.fqdn
 output customerServiceFqdn string = customerServiceApp.properties.configuration.ingress.fqdn
+output appInsightsConnectionString string = appInsights.properties.ConnectionString
