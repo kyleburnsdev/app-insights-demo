@@ -33,27 +33,27 @@ flowchart TD
     end
 
     subgraph ContainerApps
-        UI[Web UI (React)]
+        WebUI[Web UI (React)]
         Loan[Loan Processing Service (.NET)]
         Cust[Customer Service (Java)]
     end
 
-    User[User] --> UI
-    UI --REST--> Loan
-    UI --REST--> Cust
-    Loan --SQL/Blob--> SQL
-    Loan --Blob--> Blob
-    Cust --SQL--> SQL
+    User --> WebUI
+    WebUI -->|REST| Loan
+    WebUI -->|REST| Cust
+    Loan -->|SQL/Blob| SQL
+    Loan -->|Blob| Blob
+    Cust -->|SQL| SQL
 
-    UI -.->|Telemetry| AppInsights
+    WebUI -.->|Telemetry| AppInsights
     Loan -.->|Telemetry| AppInsights
     Cust -.->|Telemetry| AppInsights
 
-    ACR -->|Images| UI
+    ACR -->|Images| WebUI
     ACR -->|Images| Loan
     ACR -->|Images| Cust
 
-    LoadTest --> UI
+    LoadTest --> WebUI
     LoadTest --> Loan
     LoadTest --> Cust
 ```
@@ -79,38 +79,64 @@ cd app-insights-demo
 
 ### 2. Set Up GitHub Secrets
 
-In your forked repository, add the following secrets:
+Below are instructions for generating each required secret using the Azure CLI in the Azure Portal's Cloud Shell. After generating each value, copy it and add it as a secret in your GitHub repository (Settings > Secrets and variables > Actions > New repository secret).
 
-- `AZURE_CREDENTIALS`: Azure service principal credentials (JSON)
-- `AZURE_CONTAINER_REGISTRY`: Your ACR login server (e.g., myregistry.azurecr.io)
-- `AZURE_CONTAINER_REGISTRY_USERNAME` / `AZURE_CONTAINER_REGISTRY_PASSWORD`
-- `AZURE_RESOURCE_GROUP`: Resource group for deployment
-- `AZURE_LOCATION`: Azure region (e.g., eastus)
-- `AZURE_SQL_ADMIN_USERNAME` / `AZURE_SQL_ADMIN_PASSWORD`
-- `APPINSIGHTS_RESOURCE_NAME`: Name of your Application Insights resource
+> **Note:** The `--sdk-auth` flag for `az ad sp create-for-rbac` is deprecated, but is still required for GitHub Actions. Monitor the [Azure/login GitHub repo](https://github.com/Azure/login) for updates on a new recommended approach.
 
-### 3. Review and Customize Infrastructure
+#### AZURE_CREDENTIALS
 
-- Edit `infra/main.bicep` if you want to change resource names, SKUs, or locations.
-- Seed data for SQL and Blob Storage is in `infra/sql-seed.sql` and `infra/blob-seed/`.
+Create a service principal with contributor access to your resource group:
 
-### 4. Build and Push Images (CI/CD)
+```sh
+az ad sp create-for-rbac --name "app-insights-demo-sp" --role contributor --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP> --sdk-auth
+```
 
-The GitHub Actions workflow (`.github/workflows/deploy.yml`) will:
+- Replace `<SUBSCRIPTION_ID>` and `<RESOURCE_GROUP>` with your values.
+- Copy the full JSON output and use it as the value for `AZURE_CREDENTIALS`.
 
-- Build and push Docker images for each service to ACR
-- Deploy infrastructure and container apps using Bicep
-- Assign managed identity roles
-- Run a smoke test using Azure Load Testing
-- Annotate the release in Application Insights
+#### AZURE_CONTAINER_REGISTRY, AZURE_CONTAINER_REGISTRY_USERNAME, AZURE_CONTAINER_REGISTRY_PASSWORD
 
-You can trigger the workflow manually from the GitHub Actions UI or by pushing to `main`.
+If you already have an Azure Container Registry (ACR), get its details. Otherwise, create one:
 
-### 5. Monitor and Validate
+```sh
+# Create ACR (if needed)
+az acr create --resource-group <RESOURCE_GROUP> --name <ACR_NAME> --sku Basic
 
-- Use the Azure Portal to monitor Application Insights for telemetry, logs, and release annotations.
-- Review the Azure Load Testing results for smoke test validation.
-- Access the Web UI via the Container App FQDN (output in the deployment logs).
+# Get ACR login server
+az acr show --name <ACR_NAME> --query "loginServer" --output tsv
+
+# Get ACR username and password
+az acr credential show --name <ACR_NAME>
+```
+
+- Use the `loginServer` as `AZURE_CONTAINER_REGISTRY` (e.g., myregistry.azurecr.io).
+- Use the `username` and `passwords[0].value` as `AZURE_CONTAINER_REGISTRY_USERNAME` and `AZURE_CONTAINER_REGISTRY_PASSWORD`.
+
+#### AZURE_RESOURCE_GROUP
+
+Use the name of your resource group (string).
+
+#### AZURE_LOCATION
+
+Use the Azure region you want to deploy to (e.g., `eastus`).
+
+#### AZURE_SQL_ADMIN_USERNAME / AZURE_SQL_ADMIN_PASSWORD
+
+Choose a username and password for your Azure SQL admin. If you want to retrieve the current values:
+
+```sh
+az sql server show --name <SQL_SERVER_NAME> --resource-group <RESOURCE_GROUP> --query "administratorLogin" --output tsv
+```
+
+- Set the password you used when creating the SQL server as `AZURE_SQL_ADMIN_PASSWORD`.
+
+#### APPINSIGHTS_RESOURCE_NAME
+
+Use the name of your Application Insights resource. To list Application Insights resources:
+
+```sh
+az monitor app-insights component list --resource-group <RESOURCE_GROUP> --query "[].name" --output tsv
+```
 
 ---
 
@@ -119,28 +145,28 @@ You can trigger the workflow manually from the GitHub Actions UI or by pushing t
 ```mermaid
 graph TD
     subgraph Microservices
-        A[Loan Processing Service (.NET)]
-        B[Customer Service (Java)]
-        C[Web UI (React)]
+        Loan[Loan Processing Service (.NET)]
+        Cust[Customer Service (Java)]
+        WebUI[Web UI (React)]
     end
-    D[Azure SQL Database]
-    E[Azure Blob Storage]
-    F[Azure Container Apps]
-    G[Application Insights]
-    H[Azure Load Testing]
+    SQL[Azure SQL Database]
+    Blob[Azure Blob Storage]
+    ACA[Azure Container Apps]
+    AppInsights[Application Insights]
+    LoadTest[Azure Load Testing]
 
-    A -- SQL/Blob --> D
-    A -- Blob --> E
-    B -- SQL --> D
-    C -- REST --> A
-    C -- REST --> B
-    A -- Telemetry --> G
-    B -- Telemetry --> G
-    C -- Telemetry --> G
-    F -- Hosts --> A
-    F -- Hosts --> B
-    F -- Hosts --> C
-    H -- Test --> F
+    Loan -->|SQL/Blob| SQL
+    Loan -->|Blob| Blob
+    Cust -->|SQL| SQL
+    WebUI -->|REST| Loan
+    WebUI -->|REST| Cust
+    Loan -.->|Telemetry| AppInsights
+    Cust -.->|Telemetry| AppInsights
+    WebUI -.->|Telemetry| AppInsights
+    ACA -->|Hosts| Loan
+    ACA -->|Hosts| Cust
+    ACA -->|Hosts| WebUI
+    LoadTest -->|Test| ACA
 ```
 
 ---
