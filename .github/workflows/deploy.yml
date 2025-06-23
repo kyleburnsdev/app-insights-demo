@@ -70,7 +70,9 @@ jobs:
           npm install
           npm run build
           docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} .
-          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}      - name: Deploy infrastructure and container apps (Bicep)
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}
+
+      - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
           DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
@@ -112,8 +114,10 @@ jobs:
         id: get_appinsights_name
         run: |
           appinsights_name=$(jq -r '.appInsightsName.value' bicep-outputs.json)
-          echo "appinsights_name=$appinsights_name" >> $GITHUB_OUTPUT      - name: Get Managed Identity Principal ID
-        id: get_identity
+          echo "appinsights_name=$appinsights_name" >> $GITHUB_OUTPUT
+
+      - name: Get Managed Identity Principal ID
+        id: get_managed_identity
         run: |
           # Check if identity exists
           existing_identity=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'id' -o tsv 2>/dev/null) || true
@@ -142,7 +146,7 @@ jobs:
         run: |
           sql_server_name=${{ steps.get_resource_names.outputs.sql_server_name }}
           db_name=${{ steps.get_resource_names.outputs.sql_db_name }}
-          principal_id=${{ steps.get_identity.outputs.principal_id }}
+          principal_id=${{ steps.get_managed_identity.outputs.principal_id }}
           
           # Create an idempotent SQL script that checks if user exists before creating
           cat > setup-user.sql << EOF
@@ -165,12 +169,16 @@ jobs:
         run: |
           storage_account=${{ steps.get_resource_names.outputs.storage_account_name }}
           echo "Creating blob container if it doesn't exist..."
-          az storage container create --account-name $storage_account --name container-name --auth-mode login --if-not-exists      - name: Assign Storage and SQL roles to system-assigned managed identities
+          az storage container create --account-name $storage_account --name container-name --auth-mode login --if-not-exists
+
+      - name: Assign Storage and SQL roles to system-assigned managed identities
         run: |
           # Get resource IDs
           storage_id=$(az storage account show --name ${{ steps.get_resource_names.outputs.storage_account_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)
           sql_server_id=$(az sql server show --name ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)
-          sql_db_id=$(az sql db show --name ${{ steps.get_resource_names.outputs.sql_db_name }} --server ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)          # Assign Storage Blob Data Contributor to each container app identity
+          sql_db_id=$(az sql db show --name ${{ steps.get_resource_names.outputs.sql_db_name }} --server ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)
+
+          # Assign Storage Blob Data Contributor to each container app identity
           for app in loan-processing-service customer-service web-ui; do
             principal_id=$(az containerapp show --name $app --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
             
@@ -185,7 +193,9 @@ jobs:
             principal_id=$(az containerapp show --name $app --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
             # This step assumes you have a script or process to create the contained user in SQL DB for the principal_id
             echo "Assign SQL roles for $app (principal_id: $principal_id) - see documentation for contained user creation."
-          done      - name: Create Application Insights Release Annotation
+          done
+
+      - name: Create Application Insights Release Annotation
         run: |
           # Create a unique annotation ID based on the commit SHA to make it idempotent
           annotation_id="release-${GITHUB_SHA}"
@@ -211,7 +221,9 @@ jobs:
       - name: Copy JMeter file for Load Test
         run: |
           mkdir -p ${{ github.workspace }}/load-testing-artifacts
-          cp ./load-testing/mortgage-demo.jmx ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx      - name: Run Azure Load Test (smoke test)
+          cp ./load-testing/mortgage-demo.jmx ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx
+
+      - name: Run Azure Load Test (smoke test)
         id: loadtest
         run: |
           # Get FQDNs from deployment outputs
