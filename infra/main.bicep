@@ -113,10 +113,13 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
       activeRevisionsMode: 'Single'
     }
     template: {
-      containers: [
-        {
+      containers: [        {
           name: 'loan-processing-service'
           image: loanProcessingImage
+          resources: {
+            cpu: 1
+            memory: '2Gi'
+          }
           env: [
             {
               name: 'SQL_SERVER_NAME'
@@ -180,10 +183,13 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
       activeRevisionsMode: 'Single'
     }
     template: {
-      containers: [
-        {
+      containers: [        {
           name: 'customer-service'
           image: customerServiceImage
+          resources: {
+            cpu: 1
+            memory: '2Gi'
+          }
           env: [
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -238,10 +244,13 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
       activeRevisionsMode: 'Single'
     }
     template: {
-      containers: [
-        {
+      containers: [        {
           name: 'web-ui'
           image: webUiImage
+          resources: {
+            cpu: 1
+            memory: '2Gi'
+          }
           env: [
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
