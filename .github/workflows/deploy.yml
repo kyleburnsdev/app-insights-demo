@@ -70,12 +70,11 @@ jobs:
           npm install
           npm run build
           docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} .
-          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}
-
-      - name: Deploy infrastructure and container apps (Bicep)
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}      - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
-          DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}          az deployment group create \
+          DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
+          az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
@@ -113,11 +112,20 @@ jobs:
         id: get_appinsights_name
         run: |
           appinsights_name=$(jq -r '.appInsightsName.value' bicep-outputs.json)
-          echo "appinsights_name=$appinsights_name" >> $GITHUB_OUTPUT
-
-      - name: Get Managed Identity Principal ID
+          echo "appinsights_name=$appinsights_name" >> $GITHUB_OUTPUT      - name: Get Managed Identity Principal ID
         id: get_identity
         run: |
+          # Check if identity exists
+          existing_identity=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'id' -o tsv 2>/dev/null) || true
+          
+          if [ -z "$existing_identity" ]; then
+            echo "Creating managed identity mortgageapp-identity"
+            az identity create --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --location ${{ env.LOCATION }}
+          else
+            echo "Managed identity mortgageapp-identity already exists"
+          fi
+          
+          # Get the principal ID
           principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
           echo "principal_id=$principal_id" >> $GITHUB_OUTPUT
 
@@ -126,7 +134,7 @@ jobs:
         run: |
           sql_fqdn=$(az sql server show --name $(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.sqlServerName.value' -o tsv) --resource-group ${{ env.RESOURCE_GROUP }} --query fullyQualifiedDomainName -o tsv)
           echo "sql_fqdn=$sql_fqdn" >> $GITHUB_OUTPUT
-
+          
       - name: Create Managed Identity User in SQL DB
         env:
           AZURE_SQL_ADMIN_USERNAME: ${{ env.AZURE_SQL_ADMIN_USERNAME }}
@@ -135,26 +143,40 @@ jobs:
           sql_server_name=${{ steps.get_resource_names.outputs.sql_server_name }}
           db_name=${{ steps.get_resource_names.outputs.sql_db_name }}
           principal_id=${{ steps.get_identity.outputs.principal_id }}
-          # Create user and grant roles
+          
+          # Create an idempotent SQL script that checks if user exists before creating
+          cat > setup-user.sql << EOF
+          IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'appidentity')
+          BEGIN
+              CREATE USER [appidentity] FROM EXTERNAL PROVIDER;
+          END
+          
+          -- These statements are idempotent - adding a member to a role twice does not cause an error
+          ALTER ROLE db_datareader ADD MEMBER [appidentity];
+          ALTER ROLE db_datawriter ADD MEMBER [appidentity];
+          EOF
+          
+          # Execute the SQL script
           az sql db execute --admin-user $AZURE_SQL_ADMIN_USERNAME --admin-password $AZURE_SQL_ADMIN_PASSWORD \
             --name $db_name --server $sql_server_name --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "CREATE USER [appidentity] FROM EXTERNAL PROVIDER; ALTER ROLE db_datareader ADD MEMBER [appidentity]; ALTER ROLE db_datawriter ADD MEMBER [appidentity];"
-
+            --file setup-user.sql
+            
       - name: Create Blob Storage Container
         run: |
           storage_account=${{ steps.get_resource_names.outputs.storage_account_name }}
-          az storage container create --account-name $storage_account --name container-name --auth-mode login
-
-      - name: Assign Storage and SQL roles to system-assigned managed identities
+          echo "Creating blob container if it doesn't exist..."
+          az storage container create --account-name $storage_account --name container-name --auth-mode login --if-not-exists      - name: Assign Storage and SQL roles to system-assigned managed identities
         run: |
           # Get resource IDs
           storage_id=$(az storage account show --name ${{ steps.get_resource_names.outputs.storage_account_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)
           sql_server_id=$(az sql server show --name ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)
-          sql_db_id=$(az sql db show --name ${{ steps.get_resource_names.outputs.sql_db_name }} --server ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)
-
-          # Assign Storage Blob Data Contributor to each container app identity
+          sql_db_id=$(az sql db show --name ${{ steps.get_resource_names.outputs.sql_db_name }} --server ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query id -o tsv)          # Assign Storage Blob Data Contributor to each container app identity
           for app in loan-processing-service customer-service web-ui; do
             principal_id=$(az containerapp show --name $app --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
+            
+            # The az role assignment create command is idempotent by default
+            # If the assignment already exists, it will not create a duplicate
+            echo "Creating or ensuring role assignment for $app to Storage Blob Data Contributor"
             az role assignment create --assignee $principal_id --role "Storage Blob Data Contributor" --scope $storage_id
           done
 
@@ -163,36 +185,51 @@ jobs:
             principal_id=$(az containerapp show --name $app --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
             # This step assumes you have a script or process to create the contained user in SQL DB for the principal_id
             echo "Assign SQL roles for $app (principal_id: $principal_id) - see documentation for contained user creation."
-          done
-
-      - name: Create Application Insights Release Annotation
+          done      - name: Create Application Insights Release Annotation
         run: |
-          az monitor app-insights annotation create \
+          # Create a unique annotation ID based on the commit SHA to make it idempotent
+          annotation_id="release-${GITHUB_SHA}"
+          
+          # Check if an annotation with this ID exists (using tags)
+          existing_annotation=$(az monitor app-insights annotation list \
             --app ${{ steps.get_appinsights_name.outputs.appinsights_name }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --annotation-name "Release" \
-            --annotation-description "Release deployed from $GITHUB_REPOSITORY at commit $GITHUB_SHA (run $GITHUB_RUN_NUMBER)" \
-            --tags "sha=${GITHUB_SHA}" "run_id=${GITHUB_RUN_ID}" "workflow=${GITHUB_WORKFLOW}"
+            --query "[?contains(tags.sha, '${GITHUB_SHA}')].id" -o tsv)
+            
+          if [ -z "$existing_annotation" ]; then
+            echo "Creating new release annotation for commit ${GITHUB_SHA}"
+            az monitor app-insights annotation create \
+              --app ${{ steps.get_appinsights_name.outputs.appinsights_name }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --annotation-name "Release ${GITHUB_SHA}" \
+              --annotation-description "Release deployed from $GITHUB_REPOSITORY at commit $GITHUB_SHA (run $GITHUB_RUN_NUMBER)" \
+              --tags "sha=${GITHUB_SHA}" "run_id=${GITHUB_RUN_ID}" "workflow=${GITHUB_WORKFLOW}" "id=${annotation_id}"
+          else
+            echo "Release annotation for commit ${GITHUB_SHA} already exists"
+          fi
 
       - name: Copy JMeter file for Load Test
         run: |
           mkdir -p ${{ github.workspace }}/load-testing-artifacts
-          cp ./load-testing/mortgage-demo.jmx ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx
-
-      - name: Run Azure Load Test (smoke test)
+          cp ./load-testing/mortgage-demo.jmx ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx      - name: Run Azure Load Test (smoke test)
         id: loadtest
         run: |
           # Get FQDNs from deployment outputs
           loan_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.loanProcessingFqdn.value' -o tsv)
           customer_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.customerServiceFqdn.value' -o tsv)
 
+          # Create a unique test run name based on commit SHA
+          test_name="Smoke Test - ${GITHUB_SHA}"
+          
+          echo "Running Azure Load Test with display name: $test_name"
           # Run Azure Load Test with JMeter file and host variables
+          # Note: Azure Load Testing naturally supports idempotency as each run creates a new test run
           az load test-run create \
             --load-test-resource mortgage-loadtest \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --test-plan ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
             --env-variables LOAN_API_HOST=$loan_fqdn CUSTOMER_API_HOST=$customer_fqdn \
-            --display-name "Smoke Test"
+            --display-name "$test_name"
 
       - name: Azure Logout
         run: az logout
