@@ -124,6 +124,26 @@ Set this as a repository variable (not a secret) in GitHub. It is the Azure regi
 
 Choose a username and password for your Azure SQL admin. Set the password you used when creating the SQL server as `AZURE_SQL_ADMIN_PASSWORD`.
 
+#### Required Role Assignment for GitHub Workflow
+
+> **Important:** The service principal used for `AZURE_CREDENTIALS` must have **User Access Administrator** rights (or Owner) over the target resource group. This is required for the workflow to assign roles to managed identities and other resources.
+>
+> You can grant this with the following Azure CLI command:
+>
+> ```sh
+> az role assignment create \
+>   --assignee <APP_INSIGHTS_DEMO_SP_OBJECT_ID> \
+>   --role "User Access Administrator" \
+>   --scope /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>
+> ```
+>
+> - Replace `<APP_INSIGHTS_DEMO_SP_OBJECT_ID>` with the Object ID of your service principal (not the App ID).
+> - Replace `<SUBSCRIPTION_ID>` and `<RESOURCE_GROUP>` with your values.
+> - You can find the Object ID with:
+>   ```sh
+>   az ad sp show --id <APP_ID> --query objectId -o tsv
+>   ```
+
 ---
 
 ## Component Overview
