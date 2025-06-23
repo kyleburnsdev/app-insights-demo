@@ -259,6 +259,9 @@ jobs:
             echo "Assign SQL roles for $app (principal_id: $principal_id) - see documentation for contained user creation."
           done
 
+      - name: Install Azure Application Insights CLI extension
+        run: az extension add -n application-insights
+
       - name: Create Application Insights Release Annotation
         run: |
           # Create a unique annotation ID based on the commit SHA to make it idempotent
