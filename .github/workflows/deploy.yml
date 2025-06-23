@@ -75,6 +75,7 @@ jobs:
       - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
+          DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
           az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
@@ -84,12 +85,17 @@ jobs:
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
-            --name mortgage-deployment
+            --name $DEPLOYMENT_NAME
 
+          echo "Deployment finished. Getting outputs:"
           az deployment group show \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name mortgage-deployment \
-            --query "properties.outputs" > bicep-outputs.json
+            --name $DEPLOYMENT_NAME \
+            -o json > deployment-full.json
+
+          cat deployment-full.json
+          jq '.properties.outputs' deployment-full.json > bicep-outputs.json
+          cat bicep-outputs.json
 
       - name: Get Storage, SQL Server, and SQL DB Names from Bicep Outputs
         id: get_resource_names
