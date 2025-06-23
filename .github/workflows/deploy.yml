@@ -84,6 +84,11 @@ jobs:
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
+            --name mortgage-deployment
+
+          az deployment group show \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name mortgage-deployment \
             --query "properties.outputs" > bicep-outputs.json
 
       - name: Get Storage, SQL Server, and SQL DB Names from Bicep Outputs
