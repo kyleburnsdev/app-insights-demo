@@ -259,31 +259,23 @@ jobs:
             echo "Assign SQL roles for $app (principal_id: $principal_id) - see documentation for contained user creation."
           done
 
-      - name: Install Azure Application Insights CLI extension
-        run: az extension add -n application-insights
-
-      - name: Create Application Insights Release Annotation
+      - name: Create Application Insights Release Annotation (REST API)
         run: |
-          # Create a unique annotation ID based on the commit SHA to make it idempotent
+          app_id=${{ steps.get_appinsights_name.outputs.appinsights_name }}
+          rg=${{ env.RESOURCE_GROUP }}
+          subscription_id=$(az account show --query id -o tsv)
           annotation_id="release-${GITHUB_SHA}"
-          
-          # Check if an annotation with this ID exists (using tags)
-          existing_annotation=$(az monitor app-insights annotation list \
-            --app ${{ steps.get_appinsights_name.outputs.appinsights_name }} \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "[?contains(tags.sha, '${GITHUB_SHA}')].id" -o tsv)
-            
-          if [ -z "$existing_annotation" ]; then
-            echo "Creating new release annotation for commit ${GITHUB_SHA}"
-            az monitor app-insights annotation create \
-              --app ${{ steps.get_appinsights_name.outputs.appinsights_name }} \
-              --resource-group ${{ env.RESOURCE_GROUP }} \
-              --annotation-name "Release ${GITHUB_SHA}" \
-              --annotation-description "Release deployed from $GITHUB_REPOSITORY at commit $GITHUB_SHA (run $GITHUB_RUN_NUMBER)" \
-              --tags "sha=${GITHUB_SHA}" "run_id=${GITHUB_RUN_ID}" "workflow=${GITHUB_WORKFLOW}" "id=${annotation_id}"
-          else
-            echo "Release annotation for commit ${GITHUB_SHA} already exists"
-          fi
+          body=$(jq -n \
+            --arg name "Release $GITHUB_SHA" \
+            --arg desc "Release deployed from $GITHUB_REPOSITORY at commit $GITHUB_SHA (run $GITHUB_RUN_NUMBER)" \
+            --arg sha "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg id "$annotation_id" \
+            '{AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
+          az rest --method post \
+            --uri "https://management.azure.com/subscriptions/${subscription_id}/resourceGroups/$rg/providers/microsoft.insights/components/$app_id/Annotations?api-version=2015-05-01" \
+            --body "$body"
 
       - name: Copy JMeter file for Load Test
         run: |
