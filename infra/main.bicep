@@ -67,10 +67,6 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-06-01' = {
   }
 }
 
-resource logAnalyticsSharedKeys 'Microsoft.OperationalInsights/workspaces/sharedKeys@2020-08-01' = {
-  name: '${logAnalytics.name}/sharedKeys'
-}
-
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: appInsightsName
   location: location
@@ -89,7 +85,6 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
         customerId: logAnalytics.properties.customerId
-        sharedKey: logAnalyticsSharedKeys.properties.primarySharedKey
       }
     }
   }
