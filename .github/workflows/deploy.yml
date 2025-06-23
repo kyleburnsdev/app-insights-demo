@@ -159,11 +159,10 @@ jobs:
           ALTER ROLE db_datareader ADD MEMBER [appidentity];
           ALTER ROLE db_datawriter ADD MEMBER [appidentity];
           EOF
-          
-          # Execute the SQL script
-          az sql db execute --admin-user $AZURE_SQL_ADMIN_USERNAME --admin-password $AZURE_SQL_ADMIN_PASSWORD \
-            --name $db_name --server $sql_server_name --resource-group ${{ env.RESOURCE_GROUP }} \
-            --file setup-user.sql
+            # Execute the SQL script using the az sql db query command
+          az sql db query --admin-user "$AZURE_SQL_ADMIN_USERNAME" --admin-password "$AZURE_SQL_ADMIN_PASSWORD" \
+            --name "$db_name" --server "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query-file "setup-user.sql"
             
       - name: Create Blob Storage Container
         run: |
