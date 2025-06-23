@@ -16,6 +16,7 @@ var sqlDbName = 'mortgageappdb'
 var storageAccountName = toLower(uniqueString(resourceGroup().id, 'mortgagestorage'))
 var appInsightsName = 'mortgageapp-ai'
 var containerEnvName = 'mortgageapp-env'
+var logAnalyticsName = 'mortgage-law-${uniqueString(resourceGroup().id)}'
 
 resource sqlServer 'Microsoft.Sql/servers@2022-05-01-preview' = {
   name: sqlServerName
@@ -55,12 +56,28 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-06-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+resource logAnalyticsSharedKeys 'Microsoft.OperationalInsights/workspaces/sharedKeys@2020-08-01' = {
+  name: '${logAnalytics.name}/sharedKeys'
+}
+
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: appInsightsName
   location: location
   kind: 'web'
   properties: {
     Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
   }
 }
 
@@ -71,8 +88,8 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
-        customerId: appInsights.properties.InstrumentationKey
-        sharedKey: ''
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalyticsSharedKeys.properties.primarySharedKey
       }
     }
   }
@@ -280,3 +297,4 @@ output loadTestName string = loadTest.name
 output loanProcessingFqdn string = loanProcessingApp.properties.configuration.ingress.fqdn
 output customerServiceFqdn string = customerServiceApp.properties.configuration.ingress.fqdn
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
+output logAnalyticsWorkspaceId string = logAnalytics.id
