@@ -75,8 +75,7 @@ jobs:
       - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
-          DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
-          az deployment group create \
+          DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}          az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
@@ -85,6 +84,9 @@ jobs:
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
+              registryUsername=${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }} \
+              registryPassword=${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }} \
+              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
             --name $DEPLOYMENT_NAME
 
           echo "Deployment finished. Getting outputs:"

@@ -94,6 +94,11 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
 param loanProcessingImage string
 param customerServiceImage string
 param webUiImage string
+@secure()
+param registryUsername string
+@secure()
+param registryPassword string
+param registryServer string
 
 // Loan Processing Service
 resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
@@ -109,7 +114,19 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
         external: true
         targetPort: 80
       }
-      secrets: []
+      registries: [
+        {
+          server: registryServer
+          username: registryUsername
+          passwordSecretRef: 'registry-password'
+        }
+      ]
+      secrets: [
+        {
+          name: 'registry-password'
+          value: registryPassword
+        }
+      ]
       activeRevisionsMode: 'Single'
     }
     template: {
@@ -179,7 +196,19 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
         external: true
         targetPort: 8080
       }
-      secrets: []
+      registries: [
+        {
+          server: registryServer
+          username: registryUsername
+          passwordSecretRef: 'registry-password'
+        }
+      ]
+      secrets: [
+        {
+          name: 'registry-password'
+          value: registryPassword
+        }
+      ]
       activeRevisionsMode: 'Single'
     }
     template: {
@@ -240,7 +269,19 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
         external: true
         targetPort: 80
       }
-      secrets: []
+      registries: [
+        {
+          server: registryServer
+          username: registryUsername
+          passwordSecretRef: 'registry-password'
+        }
+      ]
+      secrets: [
+        {
+          name: 'registry-password'
+          value: registryPassword
+        }
+      ]
       activeRevisionsMode: 'Single'
     }
     template: {
