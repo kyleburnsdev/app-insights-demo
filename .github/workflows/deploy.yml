@@ -157,7 +157,21 @@ jobs:
           -- These statements are idempotent - adding a member to a role twice does not cause an error
           ALTER ROLE db_datareader ADD MEMBER [appidentity];
           ALTER ROLE db_datawriter ADD MEMBER [appidentity];
-          EOF
+          EOF          # Get the current runner's IP address
+          echo "Getting current runner's public IP address..."
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "Current runner's public IP: $RUNNER_IP"
+          
+          # Add a firewall rule to allow access from the GitHub Actions runner
+          echo "Adding SQL Server firewall rule for GitHub Actions runner..."
+          az sql server firewall-rule create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --server $sql_server_name \
+            --name "GithubActionsRunner-$GITHUB_RUN_ID" \
+            --start-ip-address $RUNNER_IP \
+            --end-ip-address $RUNNER_IP
+          
+          echo "Starting sqlcmd installation while firewall rule propagates..."
           
           # Install the sqlcmd utility
           echo "Installing sqlcmd utility..."
@@ -165,10 +179,23 @@ jobs:
           curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
-            # Execute the SQL script using sqlcmd
+          
+          # Give some additional time for the firewall rule to fully propagate if needed
+          echo "Waiting a moment to ensure firewall rule has propagated..."
+          sleep 10
+            
+          # Execute the SQL script using sqlcmd
           sql_fqdn=${{ steps.get_sql_fqdn.outputs.sql_fqdn }}
           echo "Executing SQL script against $sql_fqdn..."
           /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -U "$AZURE_SQL_ADMIN_USERNAME" -P "$AZURE_SQL_ADMIN_PASSWORD" -i setup-user.sql
+          
+          # Clean up: Remove the temporary firewall rule
+          echo "Removing temporary SQL Server firewall rule..."
+          az sql server firewall-rule delete \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --server $sql_server_name \
+            --name "GithubActionsRunner-$GITHUB_RUN_ID" \
+            --yes
 
       - name: Create Blob Storage Container
         run: |
