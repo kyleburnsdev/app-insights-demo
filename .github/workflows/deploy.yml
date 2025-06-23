@@ -158,11 +158,17 @@ jobs:
           -- These statements are idempotent - adding a member to a role twice does not cause an error
           ALTER ROLE db_datareader ADD MEMBER [appidentity];
           ALTER ROLE db_datawriter ADD MEMBER [appidentity];
-          EOF
-            # Execute the SQL script using the az sql db query command
-          az sql db query --admin-user "$AZURE_SQL_ADMIN_USERNAME" --admin-password "$AZURE_SQL_ADMIN_PASSWORD" \
-            --name "$db_name" --server "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query-file "setup-user.sql"
+          EOF          # Install the sqlcmd utility
+          echo "Installing sqlcmd utility..."
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
+          
+          # Execute the SQL script using sqlcmd
+          sql_fqdn=${{ steps.get_sql_fqdn.outputs.sql_fqdn }}
+          echo "Executing SQL script against $sql_fqdn..."
+          /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -U "$AZURE_SQL_ADMIN_USERNAME" -P "$AZURE_SQL_ADMIN_PASSWORD" -i setup-user.sql
             
       - name: Create Blob Storage Container
         run: |
