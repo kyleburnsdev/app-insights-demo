@@ -147,8 +147,7 @@ jobs:
           sql_server_name=${{ steps.get_resource_names.outputs.sql_server_name }}
           db_name=${{ steps.get_resource_names.outputs.sql_db_name }}
           principal_id=${{ steps.get_managed_identity.outputs.principal_id }}
-          
-          # Create an idempotent SQL script that checks if user exists before creating
+            # Create an idempotent SQL script that checks if user exists before creating
           cat > setup-user.sql << EOF
           IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'appidentity')
           BEGIN
@@ -158,23 +157,46 @@ jobs:
           -- These statements are idempotent - adding a member to a role twice does not cause an error
           ALTER ROLE db_datareader ADD MEMBER [appidentity];
           ALTER ROLE db_datawriter ADD MEMBER [appidentity];
-          EOF          # Install the sqlcmd utility
+          EOF
+          
+          # Install the sqlcmd utility
           echo "Installing sqlcmd utility..."
           curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
           curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
-          
-          # Execute the SQL script using sqlcmd
+            # Execute the SQL script using sqlcmd
           sql_fqdn=${{ steps.get_sql_fqdn.outputs.sql_fqdn }}
           echo "Executing SQL script against $sql_fqdn..."
           /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -U "$AZURE_SQL_ADMIN_USERNAME" -P "$AZURE_SQL_ADMIN_PASSWORD" -i setup-user.sql
-            
+
       - name: Create Blob Storage Container
         run: |
           storage_account=${{ steps.get_resource_names.outputs.storage_account_name }}
           echo "Creating blob container if it doesn't exist..."
-          az storage container create --account-name $storage_account --name container-name --auth-mode login --if-not-exists
+          echo "Using storage account: $storage_account in resource group: ${{ env.RESOURCE_GROUP }}"
+          
+          # First, check if storage account exists
+          if ! az storage account show --name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+            echo "Error: Storage account $storage_account not found in resource group ${{ env.RESOURCE_GROUP }}"
+            exit 1
+          fi
+            # Get the storage account key for authentication
+          echo "Getting storage account key..."
+          storage_key=$(az storage account keys list --account-name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].value" -o tsv)
+          
+          if [ -z "$storage_key" ]; then
+            echo "Error: Could not retrieve storage account key"
+            exit 1
+          fi
+          
+          # Create container with account key instead of login auth
+          echo "Creating container with account key authentication..."
+          az storage container create \
+            --account-name $storage_account \
+            --name "mortgage-data" \
+            --account-key "$storage_key" \
+            --if-not-exists
 
       - name: Assign Storage and SQL roles to system-assigned managed identities
         run: |
