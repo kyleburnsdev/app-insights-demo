@@ -216,14 +216,24 @@ jobs:
             echo "Error: Could not retrieve storage account key"
             exit 1
           fi
-          
-          # Create container with account key instead of login auth
-          echo "Creating container with account key authentication..."
-          az storage container create \
+            # Check if container exists first (idempotency)
+          echo "Checking if container exists..."
+          container_exists=$(az storage container exists \
             --account-name $storage_account \
             --name "mortgage-data" \
             --account-key "$storage_key" \
-            --if-not-exists
+            --query exists -o tsv)
+            
+          if [ "$container_exists" = "true" ]; then
+            echo "Container 'mortgage-data' already exists. Skipping creation."
+          else
+            echo "Container 'mortgage-data' does not exist. Creating now..."
+            az storage container create \
+              --account-name $storage_account \
+              --name "mortgage-data" \
+              --account-key "$storage_key"
+            echo "Container created successfully."
+          fi
 
       - name: Assign Storage and SQL roles to system-assigned managed identities
         run: |
