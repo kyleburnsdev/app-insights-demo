@@ -445,18 +445,43 @@ jobs:
           loan_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.loanProcessingFqdn.value' -o tsv)
           customer_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.customerServiceFqdn.value' -o tsv)
 
-          # Create a unique test run name based on commit SHA
-          test_name="Smoke Test - ${GITHUB_SHA}"
+          # Create unique test names (with and without spaces) based on commit SHA
+          test_id="mortgage-test-${GITHUB_SHA:0:8}"
+          test_display_name="Smoke Test - ${GITHUB_SHA:0:8}"
           
-          echo "Running Azure Load Test with display name: $test_name"
-          # Run Azure Load Test with JMeter file and host variables
-          # Note: Azure Load Testing naturally supports idempotency as each run creates a new test run
-          az load test-run create \
-            --load-test-resource mortgage-loadtest \
+          echo "Running Azure Load Test with display name: $test_display_name"
+          echo "Test ID: $test_id"
+          
+          # First create/update the test definition
+          test_exists=$(az load test show --name $test_id --resource-group ${{ env.RESOURCE_GROUP }} --load-test-resource mortgage-loadtest 2>/dev/null) || true
+          
+          if [ -z "$test_exists" ]; then
+            echo "Creating new test definition: $test_id"
+            az load test create \
+              --name $test_id \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --load-test-resource mortgage-loadtest \
+              --test-plan @${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
+              --description "Smoke test for mortgage application" \
+              --display-name "$test_display_name"
+          else
+            echo "Test already exists. Updating test plan."
+            az load test update \
+              --name $test_id \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --load-test-resource mortgage-loadtest \
+              --test-plan @${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
+              --display-name "$test_display_name"
+          fi
+            # Now run the test
+          echo "Starting test run for: $test_id"
+          az load test-run start \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --test-plan ${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
-            --env-variables LOAN_API_HOST=$loan_fqdn CUSTOMER_API_HOST=$customer_fqdn \
-            --display-name "$test_name"
+            --load-test-resource mortgage-loadtest \
+            --test-id $test_id \
+            --env-variable LOAN_API_HOST="$loan_fqdn" \
+            --env-variable CUSTOMER_API_HOST="$customer_fqdn" \
+            --display-name "$test_display_name"
 
       - name: Azure Logout
         run: az logout
