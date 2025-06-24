@@ -18,7 +18,8 @@ var sqlDbName = 'mortgageappdb'
 var storageAccountName = uniqueString(resourceGroup().id, 'storage')
 var appInsightsName = uniqueString(resourceGroup().id, 'appinsights')
 var logAnalyticsWorkspaceName = uniqueString(resourceGroup().id, 'logs')
-var containerAppEnvName = uniqueString(resourceGroup().id, 'appenv')
+// Use a consistent name for the container app environment to avoid conflicts
+var containerAppEnvName = 'mortgageapp-env'
 
 resource sqlServer 'Microsoft.Sql/servers@2022-05-01-preview' = {
   name: sqlServerName

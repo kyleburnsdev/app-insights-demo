@@ -114,10 +114,61 @@ jobs:
           current_user_id=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || az ad sp show --id $(az account show --query user.name -o tsv) --query id -o tsv)
           echo "object_id=$current_user_id" >> $GITHUB_OUTPUT
           
+      # Check and clean up existing container apps before deployment
+      - name: Check and clean up existing container apps
+        run: |
+          # Set up error handling
+          set -e
+          
+          echo "Checking for existing container apps in resource group ${{ env.RESOURCE_GROUP }}..."
+          
+          # Loop through all container apps we want to deploy
+          for app in loan-processing-service customer-service web-ui; do
+            echo "Checking if container app '$app' exists..."
+            
+            # Check if app exists (doesn't matter in which environment)
+            app_exists=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$app'].id" -o tsv)
+            
+            if [ -n "$app_exists" ]; then
+              echo "Container app '$app' found. Getting current environment..."
+              
+              # Get the environment ID from the container app
+              current_env_id=$(az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.managedEnvironmentId" -o tsv)
+              current_env_name=$(echo $current_env_id | awk -F'/' '{print $NF}')
+              
+              echo "Container app '$app' exists in environment '$current_env_name'. Deleting container app..."
+              
+              # Delete the container app
+              az containerapp delete --name $app --resource-group ${{ env.RESOURCE_GROUP }} --yes
+              
+              echo "Container app '$app' deleted successfully."
+            else
+              echo "Container app '$app' not found. No cleanup needed."
+            fi          done
+          
+          echo "Container app cleanup completed."
+          
       - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
           DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
+          
+          # First run a what-if operation to check for potential issues
+          echo "Running what-if deployment validation..."
+          az deployment group what-if \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters \
+              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \
+              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
+              customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
+              webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
+              registryUsername=${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }} \
+              registryPassword=${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }} \
+              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}
+          
+          # Now run the actual deployment
+          echo "Running actual deployment..."
           az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
@@ -263,7 +314,7 @@ jobs:
           fi
             # Check if container exists first (idempotency)
           echo "Checking if container exists..."
-          container_exists=$(az storage container exists \
+          container_exists=$(az storage.container exists \
             --account-name $storage_account \
             --name "mortgage-data" \
             --account-key "$storage_key" \
