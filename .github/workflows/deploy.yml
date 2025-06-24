@@ -418,6 +418,8 @@ jobs:
           rg=${{ env.RESOURCE_GROUP }}
           subscription_id=$(az account show --query id -o tsv)
           annotation_id="release-${GITHUB_SHA}"
+          # Creating timestamp in ISO8601 format (UTC)
+          current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           body=$(jq -n \
             --arg id "$annotation_id" \
             --arg name "Release $GITHUB_SHA" \
@@ -425,7 +427,8 @@ jobs:
             --arg sha "$GITHUB_SHA" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg workflow "$GITHUB_WORKFLOW" \
-            '{Id: $id, AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
+            --arg event_time "$current_time" \
+            '{Id: $id, AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", EventTime: $event_time, Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
           az rest --method put \
             --uri "https://management.azure.com/subscriptions/${subscription_id}/resourceGroups/$rg/providers/microsoft.insights/components/$app_id/Annotations?api-version=2015-05-01" \
             --body "$body"
