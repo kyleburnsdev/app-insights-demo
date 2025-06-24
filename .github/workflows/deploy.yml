@@ -458,6 +458,7 @@ jobs:
           if [ -z "$test_exists" ]; then
             echo "Creating new test definition: $test_id"
             az load test create \
+              --test-id $test_id \
               --name $test_id \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --load-test-resource mortgage-loadtest \
@@ -467,6 +468,7 @@ jobs:
           else
             echo "Test already exists. Updating test plan."
             az load test update \
+              --test-id $test_id \
               --name $test_id \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --load-test-resource mortgage-loadtest \
