@@ -462,7 +462,7 @@ jobs:
               --name $test_id \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --load-test-resource mortgage-loadtest \
-              --test-plan @${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
+              --test-plan "${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx" \
               --description "Smoke test for mortgage application" \
               --display-name "$test_display_name"
           else
@@ -472,7 +472,7 @@ jobs:
               --name $test_id \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --load-test-resource mortgage-loadtest \
-              --test-plan @${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx \
+              --test-plan "${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx" \
               --display-name "$test_display_name"
           fi
             # Now run the test
