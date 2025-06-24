@@ -371,7 +371,7 @@ jobs:
           fi
             # Check if container exists first (idempotency)
           echo "Checking if container exists..."
-          container_exists=$(az storage.container exists \
+          container_exists=$(az storage container exists \
             --account-name $storage_account \
             --name "mortgage-data" \
             --account-key "$storage_key" \
