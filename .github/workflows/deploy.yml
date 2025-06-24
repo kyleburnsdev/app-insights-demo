@@ -464,7 +464,8 @@ jobs:
               --load-test-resource mortgage-loadtest \
               --test-plan "${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx" \
               --description "Smoke test for mortgage application" \
-              --display-name "$test_display_name"
+              --display-name "$test_display_name" \
+              --env-var LOAN_API_HOST="$loan_fqdn" CUSTOMER_API_HOST="$customer_fqdn"
           else
             echo "Test already exists. Updating test plan."
             az load test update \
@@ -473,7 +474,8 @@ jobs:
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --load-test-resource mortgage-loadtest \
               --test-plan "${{ github.workspace }}/load-testing-artifacts/mortgage-demo.jmx" \
-              --display-name "$test_display_name"
+              --display-name "$test_display_name" \
+              --env-var LOAN_API_HOST="$loan_fqdn" CUSTOMER_API_HOST="$customer_fqdn"
           fi
             # Now run the test
           echo "Starting test run for: $test_id"
@@ -481,8 +483,6 @@ jobs:
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --load-test-resource mortgage-loadtest \
             --test-id $test_id \
-            --env-variable LOAN_API_HOST="$loan_fqdn" \
-            --env-variable CUSTOMER_API_HOST="$customer_fqdn" \
             --display-name "$test_display_name"
 
       - name: Azure Logout
