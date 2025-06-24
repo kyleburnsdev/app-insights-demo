@@ -72,6 +72,25 @@ jobs:
           docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} .
           docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}
 
+      - name: Ensure SQL Server allows SQL authentication (disable AAD-only if needed)
+        id: ensure_sql_auth
+        run: |
+          sql_server_name=$(az sql server list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          if [ -z "$sql_server_name" ]; then
+            echo "No SQL server found, skipping AAD-only auth check."
+            echo "aad_only_was_enabled=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          aad_only=$(az sql server ad-only-auth get --name "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }} --query azureADOnlyAuthentication -o tsv)
+          if [ "$aad_only" = "Enabled" ]; then
+            echo "AAD-only authentication is enabled. Disabling temporarily for deployment."
+            az sql server ad-only-auth disable --name "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }}
+            echo "aad_only_was_enabled=true" >> $GITHUB_OUTPUT
+          else
+            echo "AAD-only authentication is not enabled."
+            echo "aad_only_was_enabled=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
@@ -304,3 +323,12 @@ jobs:
 
       - name: Azure Logout
         run: az logout
+
+      - name: Restore AAD-only authentication if it was previously enabled
+        if: steps.ensure_sql_auth.outputs.aad_only_was_enabled == 'true'
+        run: |
+          sql_server_name=$(az sql server list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          if [ -n "$sql_server_name" ]; then
+            echo "Re-enabling AAD-only authentication on $sql_server_name."
+            az sql server ad-only-auth enable --name "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }}
+          fi
