@@ -229,8 +229,7 @@ jobs:
         run: |
           # Use the SQL server name we already have from Bicep outputs instead of complex nested queries
           sql_fqdn=$(az sql server show --name ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ env.RESOURCE_GROUP }} --query fullyQualifiedDomainName -o tsv)
-          
-          # Add error handling
+            # Add error handling
           if [ -z "$sql_fqdn" ]; then
             echo "Error: Could not retrieve SQL Server FQDN"
             exit 1
@@ -240,9 +239,21 @@ jobs:
 
       - name: Create Managed Identity User in SQL DB using Azure AD auth
         run: |
+          # Enable verbose debugging and error handling
+          set -e
+          
           sql_server_name=${{ steps.get_resource_names.outputs.sql_server_name }}
           db_name=${{ steps.get_resource_names.outputs.sql_db_name }}
           principal_id=${{ steps.get_managed_identity.outputs.principal_id }}
+          
+          # Verify we have all required values
+          if [ -z "$sql_server_name" ] || [ -z "$db_name" ] || [ -z "$principal_id" ]; then
+            echo "Error: Missing required parameters for SQL user creation."
+            [ -z "$sql_server_name" ] && echo "SQL server name is empty"
+            [ -z "$db_name" ] && echo "Database name is empty"
+            [ -z "$principal_id" ] && echo "Principal ID is empty"
+            exit 1
+          fi
           
           # Get the current runner's IP address
           echo "Getting current runner's public IP address..."
@@ -277,14 +288,60 @@ jobs:
           -- These statements are idempotent - adding a member to a role twice does not cause an error
           ALTER ROLE db_datareader ADD MEMBER [appidentity];
           ALTER ROLE db_datawriter ADD MEMBER [appidentity];
-          EOF
-            # Execute commands using Azure AD authentication with the current signed-in user
+          EOF          # Execute commands using Azure AD authentication with the current signed-in user
           sql_fqdn=${{ steps.get_sql_fqdn.outputs.sql_fqdn }}
-          echo "Executing SQL script against $sql_fqdn using AAD auth..."
+          echo "Executing SQL script against $sql_fqdn using AAD auth with access token..."
           
-          # Use -G flag for Azure AD authentication (no need for explicit token with sqlcmd)
-          echo "Running SQL commands with Azure AD authentication"
-          /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -G -i setup-aad-user.sql
+          # Get an access token for the SQL database
+          echo "Obtaining Azure access token for SQL database..."
+          token=$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)
+          
+          if [ -z "$token" ]; then
+            echo "Error: Could not obtain access token for SQL authentication"
+            exit 1
+          fi
+            # Use access token for authentication instead of integrated auth
+          echo "Running SQL commands with Azure AD token-based authentication"
+          
+          # Try with token-based auth
+          echo "Attempting to execute SQL with token-based authentication..."
+          if /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -P "$token" -G -I -C -i setup-aad-user.sql; then
+            echo "SQL script executed successfully with token-based authentication."
+          else
+            echo "Token-based authentication failed. Trying alternative approach..."
+            
+            # Alternative approach: Use az sql commands directly
+            echo "Using az sql db commands to create user and assign roles..."
+            
+            # Create a SQL script that uses the logged-in Azure admin to create our managed identity user
+            cat > setup-aad-user-alt.sql << EOF
+            -- Create user for managed identity
+            IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'appidentity')
+            BEGIN
+                CREATE USER [appidentity] FROM EXTERNAL PROVIDER WITH OBJECT_ID = '$principal_id';
+            END
+            
+            -- These statements are idempotent - adding a member to a role twice does not cause an error
+            ALTER ROLE db_datareader ADD MEMBER [appidentity];
+            ALTER ROLE db_datawriter ADD MEMBER [appidentity];
+            EOF
+            
+            # Execute T-SQL directly via az sql db query
+            echo "Executing SQL with az sql db query..."
+            az sql db query \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --server $sql_server_name \
+              --name $db_name \
+              --query-file setup-aad-user-alt.sql
+            
+            # Verify if the query was successful
+            if [ $? -eq 0 ]; then
+              echo "SQL user creation successful using az sql db query."
+            else
+              echo "Error: Failed to create SQL user using az sql db query."
+              exit 1
+            fi
+          fi
           
           # Clean up: Remove the temporary firewall rule
           echo "Removing temporary SQL Server firewall rule..."
