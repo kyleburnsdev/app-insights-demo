@@ -57,17 +57,18 @@ jobs:
           fi
           
           echo "Service principal ID: $current_sp_id"
-          
-          # Check if role assignment exists to avoid duplicate assignments
+            # Check if role assignment exists to avoid duplicate assignments
           echo "Checking for existing role assignment..."
-          existing_role=$(az role assignment list --assignee "$current_sp_id" --role "SQL Server Contributor" --resource-group ${{ env.RESOURCE_GROUP }} --query "[].roleDefinitionName" -o tsv)
-          
-          if [ -z "$existing_role" ]; then
+          # Get resource group ID for proper scoping
+          rg_id=$(az group show --name ${{ env.RESOURCE_GROUP }} --query id -o tsv)
+          existing_role=$(az role assignment list --assignee "$current_sp_id" --role "SQL Server Contributor" --scope "$rg_id" --query "[].roleDefinitionName" -o tsv)
+            if [ -z "$existing_role" ]; then
             echo "Granting SQL Server Contributor role to service principal at resource group level"
-            az role assignment create --assignee "$current_sp_id" --role "SQL Server Contributor" --resource-group ${{ env.RESOURCE_GROUP }}
-            
-            # Verify the role was assigned
-            verify_role=$(az role assignment list --assignee "$current_sp_id" --role "SQL Server Contributor" --resource-group ${{ env.RESOURCE_GROUP }} --query "[].roleDefinitionName" -o tsv)
+            # Get resource group ID for proper scoping
+            rg_id=$(az group show --name ${{ env.RESOURCE_GROUP }} --query id -o tsv)
+            az role assignment create --assignee "$current_sp_id" --role "SQL Server Contributor" --scope "$rg_id"
+              # Verify the role was assigned
+            verify_role=$(az role assignment list --assignee "$current_sp_id" --role "SQL Server Contributor" --scope "$rg_id" --query "[].roleDefinitionName" -o tsv)
             if [ -z "$verify_role" ]; then
               echo "Error: Failed to assign SQL Server Contributor role"
               exit 1
