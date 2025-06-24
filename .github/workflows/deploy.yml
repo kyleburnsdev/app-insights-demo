@@ -10,8 +10,6 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     env:
-      AZURE_SQL_ADMIN_USERNAME: ${{ secrets.AZURE_SQL_ADMIN_USERNAME }}
-      AZURE_SQL_ADMIN_PASSWORD: ${{ secrets.AZURE_SQL_ADMIN_PASSWORD }}
       AZURE_CONTAINER_REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
       AZURE_CONTAINER_REGISTRY_USERNAME: ${{ secrets.AZURE_CONTAINER_REGISTRY_USERNAME }}
       AZURE_CONTAINER_REGISTRY_PASSWORD: ${{ secrets.AZURE_CONTAINER_REGISTRY_PASSWORD }}
@@ -20,8 +18,8 @@ jobs:
       LOCATION: ${{ vars.AZURE_LOCATION }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v4      
+      
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -42,6 +40,41 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Grant SQL Administrator role to the service principal at resource group level
+      - name: Grant SQL Administrator role to service principal
+        run: |
+          # Add error handling to ensure the script fails if critical commands fail
+          set -e
+          
+          # Get the object ID of the current service principal
+          echo "Getting service principal ID..."
+          current_sp_id=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || az ad sp show --id $(az account show --query user.name -o tsv) --query id -o tsv)
+          
+          if [ -z "$current_sp_id" ]; then
+            echo "Error: Failed to obtain service principal ID"
+            exit 1
+          fi
+          
+          echo "Service principal ID: $current_sp_id"
+          
+          # Check if role assignment exists to avoid duplicate assignments
+          echo "Checking for existing role assignment..."
+          existing_role=$(az role assignment list --assignee "$current_sp_id" --role "SQL Server Contributor" --resource-group ${{ env.RESOURCE_GROUP }} --query "[].roleDefinitionName" -o tsv)
+          
+          if [ -z "$existing_role" ]; then
+            echo "Granting SQL Server Contributor role to service principal at resource group level"
+            az role assignment create --assignee "$current_sp_id" --role "SQL Server Contributor" --resource-group ${{ env.RESOURCE_GROUP }}
+            
+            # Verify the role was assigned
+            verify_role=$(az role assignment list --assignee "$current_sp_id" --role "SQL Server Contributor" --resource-group ${{ env.RESOURCE_GROUP }} --query "[].roleDefinitionName" -o tsv)
+            if [ -z "$verify_role" ]; then
+              echo "Error: Failed to assign SQL Server Contributor role"
+              exit 1
+            fi
+          else
+            echo "Service principal already has SQL Server Contributor role"
+          fi
 
       - name: Log in to Azure Container Registry
         uses: azure/docker-login@v2
@@ -71,26 +104,15 @@ jobs:
           npm run build
           docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} .
           docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }}
-
-      - name: Ensure SQL Server allows SQL authentication (disable AAD-only if needed)
-        id: ensure_sql_auth
+          
+      # Removed pre-Bicep AAD-only check since we will handle this after getting actual SQL server name from Bicep outputs      # Get current user/service principal ID for SQL AD Admin
+      - name: Get current user object ID for AD Admin
+        id: get_current_user
         run: |
-          sql_server_name=$(az sql server list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
-          if [ -z "$sql_server_name" ]; then
-            echo "No SQL server found, skipping AAD-only auth check."
-            echo "aad_only_was_enabled=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          aad_only=$(az sql server ad-only-auth get --name "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }} --query azureADOnlyAuthentication -o tsv)
-          if [ "$aad_only" = "Enabled" ]; then
-            echo "AAD-only authentication is enabled. Disabling temporarily for deployment."
-            az sql server ad-only-auth disable --name "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }}
-            echo "aad_only_was_enabled=true" >> $GITHUB_OUTPUT
-          else
-            echo "AAD-only authentication is not enabled."
-            echo "aad_only_was_enabled=false" >> $GITHUB_OUTPUT
-          fi
-
+          # Get the object ID of the current user (service principal)
+          current_user_id=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || az ad sp show --id $(az account show --query user.name -o tsv) --query id -o tsv)
+          echo "object_id=$current_user_id" >> $GITHUB_OUTPUT
+          
       - name: Deploy infrastructure and container apps (Bicep)
         id: deploy_bicep
         run: |
@@ -99,8 +121,7 @@ jobs:
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
-              sqlAdminUsername=${{ env.AZURE_SQL_ADMIN_USERNAME }} \
-              sqlAdminPassword=${{ env.AZURE_SQL_ADMIN_PASSWORD }} \
+              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
@@ -117,7 +138,7 @@ jobs:
 
           cat deployment-full.json
           jq '.properties.outputs' deployment-full.json > bicep-outputs.json
-          cat bicep-outputs.json
+          cat bicep-outputs.json   
 
       - name: Get Storage, SQL Server, and SQL DB Names from Bicep Outputs
         id: get_resource_names
@@ -127,7 +148,7 @@ jobs:
           sql_db_name=$(jq -r '.sqlDbName.value' bicep-outputs.json)
           echo "storage_account_name=$storage_account_name" >> $GITHUB_OUTPUT
           echo "sql_server_name=$sql_server_name" >> $GITHUB_OUTPUT
-          echo "sql_db_name=$sql_db_name" >> $GITHUB_OUTPUT
+          echo "sql_db_name=$sql_db_name" >> $GITHUB_OUTPUT      # No need to toggle AAD-only auth since we're using AAD authentication throughout
 
       - name: Get Application Insights Resource Name from Bicep Outputs
         id: get_appinsights_name
@@ -147,36 +168,31 @@ jobs:
           else
             echo "Managed identity mortgageapp-identity already exists"
           fi
-          
-          # Get the principal ID
+            # Get the principal ID
           principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
           echo "principal_id=$principal_id" >> $GITHUB_OUTPUT
 
       - name: Get SQL Server FQDN
         id: get_sql_fqdn
         run: |
-          sql_fqdn=$(az sql server show --name $(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.sqlServerName.value' -o tsv) --resource-group ${{ env.RESOURCE_GROUP }} --query fullyQualifiedDomainName -o tsv)
-          echo "sql_fqdn=$sql_fqdn" >> $GITHUB_OUTPUT
+          # Use the SQL server name we already have from Bicep outputs instead of complex nested queries
+          sql_fqdn=$(az sql server show --name ${{ steps.get_resource_names.outputs.sql_server_name }} --resource-group ${{ env.RESOURCE_GROUP }} --query fullyQualifiedDomainName -o tsv)
           
-      - name: Create Managed Identity User in SQL DB
-        env:
-          AZURE_SQL_ADMIN_USERNAME: ${{ env.AZURE_SQL_ADMIN_USERNAME }}
-          AZURE_SQL_ADMIN_PASSWORD: ${{ env.AZURE_SQL_ADMIN_PASSWORD }}
+          # Add error handling
+          if [ -z "$sql_fqdn" ]; then
+            echo "Error: Could not retrieve SQL Server FQDN"
+            exit 1
+          fi
+          
+          echo "sql_fqdn=$sql_fqdn" >> $GITHUB_OUTPUT
+
+      - name: Create Managed Identity User in SQL DB using Azure AD auth
         run: |
           sql_server_name=${{ steps.get_resource_names.outputs.sql_server_name }}
           db_name=${{ steps.get_resource_names.outputs.sql_db_name }}
           principal_id=${{ steps.get_managed_identity.outputs.principal_id }}
-            # Create an idempotent SQL script that checks if user exists before creating
-          cat > setup-user.sql << EOF
-          IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'appidentity')
-          BEGIN
-              CREATE USER [appidentity] FROM EXTERNAL PROVIDER;
-          END
           
-          -- These statements are idempotent - adding a member to a role twice does not cause an error
-          ALTER ROLE db_datareader ADD MEMBER [appidentity];
-          ALTER ROLE db_datawriter ADD MEMBER [appidentity];
-          EOF          # Get the current runner's IP address
+          # Get the current runner's IP address
           echo "Getting current runner's public IP address..."
           RUNNER_IP=$(curl -s https://api.ipify.org)
           echo "Current runner's public IP: $RUNNER_IP"
@@ -190,23 +206,33 @@ jobs:
             --start-ip-address $RUNNER_IP \
             --end-ip-address $RUNNER_IP
           
-          echo "Starting sqlcmd installation while firewall rule propagates..."
-          
-          # Install the sqlcmd utility
+          # Install the sqlcmd utility for AAD authentication
           echo "Installing sqlcmd utility..."
           curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
           curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
           
-          # Give some additional time for the firewall rule to fully propagate if needed
-          echo "Waiting a moment to ensure firewall rule has propagated..."
-          sleep 10
-            
-          # Execute the SQL script using sqlcmd
+          # Create SQL script for user creation with AD auth
+          # This is simplified because the service principal already has SQL Server Contributor role
+          cat > setup-aad-user.sql << EOF
+          -- Create user for managed identity
+          IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'appidentity')
+          BEGIN
+              CREATE USER [appidentity] FROM EXTERNAL PROVIDER WITH OBJECT_ID = '$principal_id';
+          END
+          
+          -- These statements are idempotent - adding a member to a role twice does not cause an error
+          ALTER ROLE db_datareader ADD MEMBER [appidentity];
+          ALTER ROLE db_datawriter ADD MEMBER [appidentity];
+          EOF
+            # Execute commands using Azure AD authentication with the current signed-in user
           sql_fqdn=${{ steps.get_sql_fqdn.outputs.sql_fqdn }}
-          echo "Executing SQL script against $sql_fqdn..."
-          /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -U "$AZURE_SQL_ADMIN_USERNAME" -P "$AZURE_SQL_ADMIN_PASSWORD" -i setup-user.sql
+          echo "Executing SQL script against $sql_fqdn using AAD auth..."
+          
+          # Use -G flag for Azure AD authentication (no need for explicit token with sqlcmd)
+          echo "Running SQL commands with Azure AD authentication"
+          /opt/mssql-tools/bin/sqlcmd -S "$sql_fqdn" -d "$db_name" -G -i setup-aad-user.sql
           
           # Clean up: Remove the temporary firewall rule
           echo "Removing temporary SQL Server firewall rule..."
@@ -226,8 +252,7 @@ jobs:
           if ! az storage account show --name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
             echo "Error: Storage account $storage_account not found in resource group ${{ env.RESOURCE_GROUP }}"
             exit 1
-          fi
-            # Get the storage account key for authentication
+          fi            # Get the storage account key for authentication
           echo "Getting storage account key..."
           storage_key=$(az storage account keys list --account-name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].value" -o tsv)
           
@@ -267,15 +292,15 @@ jobs:
             
             # The az role assignment create command is idempotent by default
             # If the assignment already exists, it will not create a duplicate
-            echo "Creating or ensuring role assignment for $app to Storage Blob Data Contributor"
-            az role assignment create --assignee $principal_id --role "Storage Blob Data Contributor" --scope $storage_id
+            echo "Creating or ensuring role assignment for $app to Storage Blob Data Contributor"            az role assignment create --assignee $principal_id --role "Storage Blob Data Contributor" --scope $storage_id
           done
 
-          # Assign SQL roles (example: db_datareader, db_datawriter) to loan-processing-service and customer-service
+          # Container apps will use their system-assigned managed identities to access Azure SQL
+          # This is handled by the Azure AD user we created earlier with the "appidentity" name
+          # No additional SQL user creation needed here since we're using AAD authentication
           for app in loan-processing-service customer-service; do
             principal_id=$(az containerapp show --name $app --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query identity.principalId -o tsv)
-            # This step assumes you have a script or process to create the contained user in SQL DB for the principal_id
-            echo "Assign SQL roles for $app (principal_id: $principal_id) - see documentation for contained user creation."
+            echo "Container app $app has principal ID: $principal_id - will use Azure AD authentication for SQL access"
           done
 
       - name: Create Application Insights Release Annotation (REST API)
@@ -323,12 +348,3 @@ jobs:
 
       - name: Azure Logout
         run: az logout
-
-      - name: Restore AAD-only authentication if it was previously enabled
-        if: steps.ensure_sql_auth.outputs.aad_only_was_enabled == 'true'
-        run: |
-          sql_server_name=$(az sql server list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
-          if [ -n "$sql_server_name" ]; then
-            echo "Re-enabling AAD-only authentication on $sql_server_name."
-            az sql server ad-only-auth enable --name "$sql_server_name" --resource-group ${{ env.RESOURCE_GROUP }}
-          fi

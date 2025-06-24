@@ -1,31 +1,56 @@
 // Bicep template for mortgage demo app infrastructure
 // - Azure SQL Database
-// - Azure Blob Storage
-// - Azure Container Apps Environment
-// - Azure Container Apps for each service
+// - Storage Account
 // - Application Insights
-// - Load Testing resource
+// - Log Analytics Workspace
+// - Container App Environment
+// - Container Apps for services
 
 param location string = resourceGroup().location
-param sqlAdminUsername string = 'sqladminuser'
-@secure()
-param sqlAdminPassword string
+
+// Use Azure AD authentication only - no SQL authentication
+// The service principal already has SQL Server Contributor role assigned at resource group level
+param azureAdAdminObjectId string
+param azureAdAdminLogin string = 'AzureAD Admin'
 
 var sqlServerName = uniqueString(resourceGroup().id, 'sqlserver')
 var sqlDbName = 'mortgageappdb'
-var storageAccountName = toLower(uniqueString(resourceGroup().id, 'mortgagestorage'))
-var appInsightsName = 'mortgageapp-ai'
-var containerEnvName = 'mortgageapp-env'
-var logAnalyticsName = 'mortgage-law-${uniqueString(resourceGroup().id)}'
+var storageAccountName = uniqueString(resourceGroup().id, 'storage')
+var appInsightsName = uniqueString(resourceGroup().id, 'appinsights')
+var logAnalyticsWorkspaceName = uniqueString(resourceGroup().id, 'logs')
+var containerAppEnvName = uniqueString(resourceGroup().id, 'appenv')
 
 resource sqlServer 'Microsoft.Sql/servers@2022-05-01-preview' = {
   name: sqlServerName
   location: location
   properties: {
-    administratorLogin: sqlAdminUsername
-    administratorLoginPassword: sqlAdminPassword
+    // No SQL authentication - using only Azure AD authentication
     version: '12.0'
   }
+}
+
+// Set up Azure AD Administrator for SQL Server
+resource sqlServerADAdmin 'Microsoft.Sql/servers/administrators@2022-05-01-preview' = {
+  name: 'ActiveDirectory'
+  parent: sqlServer
+  properties: {
+    administratorType: 'ActiveDirectory'
+    login: azureAdAdminLogin
+    sid: azureAdAdminObjectId
+    tenantId: subscription().tenantId
+  }
+}
+
+// Enable Azure AD-only authentication to enforce security best practices
+resource sqlServerAADOnly 'Microsoft.Sql/servers/azureADOnlyAuthentications@2022-05-01-preview' = {
+  name: 'Default'
+  parent: sqlServer
+  properties: {
+    azureADOnlyAuthentication: true
+  }
+  dependsOn: [
+    sqlServerADAdmin
+  ]
 }
 
 resource sqlDb 'Microsoft.Sql/servers/databases@2022-05-01-preview' = {
@@ -57,7 +82,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 }
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-06-01' = {
-  name: logAnalyticsName
+  name: logAnalyticsWorkspaceName
   location: location
   properties: {
     sku: {
@@ -78,7 +103,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
-  name: containerEnvName
+  name: containerAppEnvName
   location: location
   properties: {
     appLogsConfiguration: {
