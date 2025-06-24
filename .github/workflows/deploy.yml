@@ -266,13 +266,13 @@ jobs:
           subscription_id=$(az account show --query id -o tsv)
           annotation_id="release-${GITHUB_SHA}"
           body=$(jq -n \
+            --arg id "$annotation_id" \
             --arg name "Release $GITHUB_SHA" \
             --arg desc "Release deployed from $GITHUB_REPOSITORY at commit $GITHUB_SHA (run $GITHUB_RUN_NUMBER)" \
             --arg sha "$GITHUB_SHA" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg workflow "$GITHUB_WORKFLOW" \
-            --arg id "$annotation_id" \
-            '{AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
+            '{Id: $id, AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
           az rest --method put \
             --uri "https://management.azure.com/subscriptions/${subscription_id}/resourceGroups/$rg/providers/microsoft.insights/components/$app_id/Annotations?api-version=2015-05-01" \
             --body "$body"
