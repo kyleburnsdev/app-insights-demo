@@ -273,7 +273,7 @@ jobs:
             --arg workflow "$GITHUB_WORKFLOW" \
             --arg id "$annotation_id" \
             '{AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
-          az rest --method post \
+          az rest --method put \
             --uri "https://management.azure.com/subscriptions/${subscription_id}/resourceGroups/$rg/providers/microsoft.insights/components/$app_id/Annotations?api-version=2015-05-01" \
             --body "$body"
 
