@@ -16,5 +16,20 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 COPY --from=build /app/publish .
 EXPOSE 8080
+
+# Environment variables for better diagnostics
 ENV ASPNETCORE_URLS=http://+:8080
+ENV ASPNETCORE_ENVIRONMENT=Production
+ENV DOTNET_RUNNING_IN_CONTAINER=true
+ENV Logging__Console__FormatterName=json
+ENV Logging__Console__FormatterOptions__IncludeScopes=true
+ENV Logging__LogLevel__Default=Information
+ENV Logging__LogLevel__Microsoft=Warning
+ENV Logging__LogLevel__Microsoft.Hosting.Lifetime=Information
+ENV DOTNET_EnableDiagnostics=true
+
+# Health check to ensure container is running properly
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
 ENTRYPOINT ["./LoanProcessingService"]
