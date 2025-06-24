@@ -138,7 +138,7 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
     configuration: {
       ingress: {
         external: true
-        targetPort: 80
+        targetPort: 8080
       }
       registries: [
         {
