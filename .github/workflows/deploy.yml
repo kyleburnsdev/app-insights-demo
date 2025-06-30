@@ -349,7 +349,7 @@ jobs:
             --server $sql_server_name \
             --name "GithubActionsRunner-$GITHUB_RUN_ID" \
             --yes
-
+            
       - name: Create Blob Storage Container
         run: |
           storage_account=${{ steps.get_resource_names.outputs.storage_account_name }}
@@ -361,6 +361,29 @@ jobs:
             echo "Error: Storage account $storage_account not found in resource group ${{ env.RESOURCE_GROUP }}"
             exit 1
           fi
+          
+          # Get the current runner's IP address
+          echo "Getting current runner's public IP address..."
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "Current runner's public IP: $RUNNER_IP"
+          
+          # Add the runner's IP to the storage account network rules temporarily
+          echo "Adding GitHub Actions runner IP to storage account network rules..."
+          az storage account network-rule add \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --account-name $storage_account \
+            --ip-address $RUNNER_IP
+            
+          # Update the default action to deny (if not already set)
+          az storage account update \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name $storage_account \
+            --default-action Allow \
+            --bypass AzureServices
+            
+          # Wait a short time for the network rule to take effect
+          echo "Waiting 15 seconds for network rule to take effect..."
+          sleep 15
             
           # Check if container exists first (idempotency) - using Azure AD auth
           echo "Checking if container exists using Azure AD authentication..."
@@ -381,6 +404,22 @@ jobs:
               --name "mortgage-data"
             echo "Container created successfully."
           fi
+          
+          # Remove the temporary network rule for the runner's IP
+          echo "Removing GitHub Actions runner IP from storage account network rules..."
+          az storage account network-rule remove \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --account-name $storage_account \
+            --ip-address $RUNNER_IP
+            
+          # Restore the default action if it was previously set to deny
+          # Note: If your security policy requires deny as default, uncomment the next block
+          # az storage account update \
+          #   --resource-group ${{ env.RESOURCE_GROUP }} \
+          #   --name $storage_account \
+          #   --default-action Deny
+          
+          echo "Storage account network rules restored."
 
       - name: Assign Storage and SQL roles to system-assigned managed identities
         run: |
