@@ -428,7 +428,7 @@ jobs:
             --arg run_id "$GITHUB_RUN_ID" \
             --arg workflow "$GITHUB_WORKFLOW" \
             --arg event_time "$current_time" \
-            '{Id: $id, AnnotationName: $name, AnnotationDescription: $desc, Category: "Release", EventTime: $event_time, Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
+            '{Id: $id, AnnotationName: $name, AnnotationDescription: $desc, Category: "Deployment", EventTime: $event_time, Tags: {sha: $sha, run_id: $run_id, workflow: $workflow, id: $id}}')
           az rest --method put \
             --uri "https://management.azure.com/subscriptions/${subscription_id}/resourceGroups/$rg/providers/microsoft.insights/components/$app_id/Annotations?api-version=2015-05-01" \
             --body "$body"
