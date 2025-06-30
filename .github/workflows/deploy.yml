@@ -342,8 +342,7 @@ jobs:
               exit 1
             fi
           fi
-          
-          # Clean up: Remove the temporary firewall rule
+            # Clean up: Remove the temporary firewall rule
           echo "Removing temporary SQL Server firewall rule..."
           az sql server firewall-rule delete \
             --resource-group ${{ env.RESOURCE_GROUP }} \
@@ -361,30 +360,25 @@ jobs:
           if ! az storage account show --name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
             echo "Error: Storage account $storage_account not found in resource group ${{ env.RESOURCE_GROUP }}"
             exit 1
-          fi            # Get the storage account key for authentication
-          echo "Getting storage account key..."
-          storage_key=$(az storage account keys list --account-name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].value" -o tsv)
-          
-          if [ -z "$storage_key" ]; then
-            echo "Error: Could not retrieve storage account key"
-            exit 1
           fi
-            # Check if container exists first (idempotency)
-          echo "Checking if container exists..."
+            
+          # Check if container exists first (idempotency) - using Azure AD auth
+          echo "Checking if container exists using Azure AD authentication..."
           container_exists=$(az storage container exists \
             --account-name $storage_account \
+            --auth-mode login \
             --name "mortgage-data" \
-            --account-key "$storage_key" \
             --query exists -o tsv)
             
           if [ "$container_exists" = "true" ]; then
             echo "Container 'mortgage-data' already exists. Skipping creation."
           else
             echo "Container 'mortgage-data' does not exist. Creating now..."
+            # Create container using Azure AD auth
             az storage container create \
               --account-name $storage_account \
-              --name "mortgage-data" \
-              --account-key "$storage_key"
+              --auth-mode login \
+              --name "mortgage-data"
             echo "Container created successfully."
           fi
 
