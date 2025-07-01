@@ -458,7 +458,7 @@ jobs:
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
               assignAcrRoles=$acr_in_same_rg \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
-            --            name $DEPLOYMENT_NAME \
+            --name $DEPLOYMENT_NAME \
             --verbose \
             --debug \
             --no-wait
