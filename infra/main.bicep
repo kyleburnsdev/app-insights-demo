@@ -20,6 +20,13 @@ var appInsightsName = uniqueString(resourceGroup().id, 'appinsights')
 var logAnalyticsWorkspaceName = uniqueString(resourceGroup().id, 'logs')
 // Use a consistent name for the container app environment to avoid conflicts
 var containerAppEnvName = 'mortgageapp-env'
+var managedIdentityName = 'mortgageapp-identity'
+
+// Create managed identity for container apps
+resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: managedIdentityName
+  location: location
+}
 
 resource sqlServer 'Microsoft.Sql/servers@2022-05-01-preview' = {
   name: sqlServerName
@@ -129,6 +136,13 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
+    // Add WorkloadProfiles for improved performance
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+    ]
   }
 }
 
@@ -145,26 +159,37 @@ var registryName = isAzureCrIo ? registryParts[0] : registryServer
 var acrResourceId = '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/Microsoft.ContainerRegistry/registries/${registryName}'
 
 // Loan Processing Service
+// Define the user-assigned managed identity
 resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'loan-processing-service'
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
   }
   properties: {
     managedEnvironmentId: containerEnv.id
-    configuration: {      ingress: {
+    configuration: {      
+      ingress: {
         external: true
         targetPort: 8080
+        allowInsecure: false
+        // Add transport settings for better reliability
+        transport: 'auto'
       }
       registries: [
         {
           server: registryServer
-          identity: 'system'
+          identity: resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', managedIdentityName)
         }
       ]
       secrets: []
-      activeRevisionsMode: 'Single'
+      activeRevisionsMode: 'Single'      // Set increased timeout for startup operations
+      dapr: {
+        enabled: false
+      }
     }
     template: {
       containers: [        {
@@ -183,8 +208,7 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: sqlDbName
             }, {
               name: 'STORAGE_ACCOUNT_NAME'
-              value: storage.name
-            }, {
+              value: storage.name            }, {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               value: appInsights.properties.ConnectionString
             }
@@ -195,18 +219,26 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
               httpGet: {
                 path: '/health'
                 port: 8080
+                scheme: 'HTTP'
               }
-              initialDelaySeconds: 10
-              periodSeconds: 10
+              initialDelaySeconds: 120
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+              successThreshold: 1
             }
             {
               type: 'Readiness'
               httpGet: {
                 path: '/health'
                 port: 8080
+                scheme: 'HTTP'
               }
-              initialDelaySeconds: 10
-              periodSeconds: 10
+              initialDelaySeconds: 120
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+              successThreshold: 1
             }
           ]
         }
@@ -224,7 +256,10 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'customer-service'
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${managedIdentity.id}': {}
+    }
   }
   properties: {
     managedEnvironmentId: containerEnv.id
@@ -232,15 +267,20 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
       ingress: {
         external: true
         targetPort: 8080
+        allowInsecure: false
+        transport: 'auto'
       }
       registries: [
         {
           server: registryServer
-          identity: 'system'
+          identity: resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', managedIdentityName)
         }
       ]
       secrets: []
       activeRevisionsMode: 'Single'
+      dapr: {
+        enabled: false
+      }
     }
     template: {
       containers: [        {
@@ -263,8 +303,11 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/actuator/health/liveness'
                 port: 8080
               }
-              initialDelaySeconds: 10
-              periodSeconds: 10
+              initialDelaySeconds: 120
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+              successThreshold: 1
             }
             {
               type: 'Readiness'
@@ -272,8 +315,11 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/actuator/health/readiness'
                 port: 8080
               }
-              initialDelaySeconds: 10
-              periodSeconds: 10
+              initialDelaySeconds: 120
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+              successThreshold: 1
             }
           ]
         }
@@ -299,6 +345,7 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
       ingress: {
         external: true
         targetPort: 80
+        transport: 'auto'
       }
       registries: [
         {
@@ -308,6 +355,9 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
       ]
       secrets: []
       activeRevisionsMode: 'Single'
+      dapr: {
+        enabled: false
+      }
     }
     template: {
       containers: [        {
@@ -330,8 +380,11 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/'
                 port: 80
               }
-              initialDelaySeconds: 10
-              periodSeconds: 10
+              initialDelaySeconds: 90
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+              successThreshold: 1
             }
             {
               type: 'Readiness'
@@ -339,8 +392,11 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/'
                 port: 80
               }
-              initialDelaySeconds: 10
-              periodSeconds: 10
+              initialDelaySeconds: 90
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+              successThreshold: 1
             }
           ]
         }

@@ -43,6 +43,66 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+          
+      # Create managed identity early to ensure it exists before container app deployment
+      - name: Create Managed Identity
+        id: create_managed_identity
+        run: |
+          # Check if identity exists
+          existing_identity=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'id' -o tsv 2>/dev/null) || true
+          
+          if [ -z "$existing_identity" ]; then
+            echo "Creating managed identity mortgageapp-identity"
+            az identity create --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --location ${{ env.LOCATION }}
+          else
+            echo "Managed identity mortgageapp-identity already exists"
+          fi
+            
+          # Get the principal ID
+          principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
+          client_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'clientId' -o tsv)
+          resource_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'id' -o tsv)
+          
+          echo "principal_id=$principal_id" >> $GITHUB_OUTPUT
+          echo "client_id=$client_id" >> $GITHUB_OUTPUT
+          echo "resource_id=$resource_id" >> $GITHUB_OUTPUT
+          
+      # Assign AcrPull role to managed identity
+      - name: Assign AcrPull role to Managed Identity
+        run: |
+          # Extract ACR name from the registry URL
+          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
+          if [[ $full_registry_url == *.azurecr.io ]]; then
+            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
+            echo "Extracted ACR name: $acr_name"
+            
+            # Get ACR resource ID
+            acr_id=$(az acr show --name "$acr_name" --query id -o tsv 2>/dev/null || echo "")
+            
+            if [ -n "$acr_id" ]; then
+              echo "ACR resource ID: $acr_id"
+              
+              # Check if role assignment exists
+              existing_acr_role=$(az role assignment list --assignee "${{ steps.create_managed_identity.outputs.principal_id }}" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+              
+              if [ -z "$existing_acr_role" ]; then
+                echo "Granting AcrPull role to managed identity on ACR"
+                az role assignment create --assignee "${{ steps.create_managed_identity.outputs.principal_id }}" --role "AcrPull" --scope "$acr_id"
+                
+                # Verify the role was assigned
+                verify_acr_role=$(az role assignment list --assignee "${{ steps.create_managed_identity.outputs.principal_id }}" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+                if [ -z "$verify_acr_role" ]; then
+                  echo "Warning: Failed to assign AcrPull role to managed identity"
+                fi
+              else
+                echo "Managed identity already has AcrPull role on ACR"
+              fi
+            else
+              echo "Warning: Could not retrieve ACR resource ID"
+            fi
+          else
+            echo "Warning: Could not parse ACR name from URL"
+          fi
 
       # Grant SQL Administrator role to the service principal at resource group level
       - name: Grant SQL Administrator role to service principal
@@ -177,8 +237,7 @@ jobs:
           # Get the object ID of the current user (service principal)
           current_user_id=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || az ad sp show --id $(az account show --query user.name -o tsv) --query id -o tsv)
           echo "object_id=$current_user_id" >> $GITHUB_OUTPUT
-          
-      # Check and clean up existing container apps before deployment
+            # Check and clean up existing container apps before deployment
       - name: Check and clean up existing container apps
         run: |
           # Set up error handling
@@ -200,15 +259,35 @@ jobs:
               current_env_id=$(az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.managedEnvironmentId" -o tsv)
               current_env_name=$(echo $current_env_id | awk -F'/' '{print $NF}')
               
+              # Get the revision ID to check status before deleting
+              echo "Getting revisions for container app '$app'..."
+              az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --output table
+              
+              # Get diagnostic logs to help understand any issues
+              echo "Getting logs for container app '$app'..."
+              az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 100
+              
               echo "Container app '$app' exists in environment '$current_env_name'. Deleting container app..."
               
-              # Delete the container app
-              az containerapp delete --name $app --resource-group ${{ env.RESOURCE_GROUP }} --yes
+              # Delete the container app with increased timeout
+              az containerapp delete --name $app --resource-group ${{ env.RESOURCE_GROUP }} --yes --debug
+              
+              # Wait a moment for resources to be fully released
+              echo "Waiting 30 seconds for resources to be released..."
+              sleep 30
               
               echo "Container app '$app' deleted successfully."
             else
               echo "Container app '$app' not found. No cleanup needed."
-            fi          done
+            fi
+          done
+          
+          # Check container app environment status
+          echo "Checking container app environment status..."
+          env_exists=$(az containerapp env list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='mortgageapp-env'].id" -o tsv)
+          if [ -n "$env_exists" ]; then
+            echo "Container app environment found. Getting status..."
+            az containerapp env show --name mortgageapp-env --resource-group ${{ env.RESOURCE_GROUP }}          fi
           
           echo "Container app cleanup completed."
           
@@ -216,8 +295,21 @@ jobs:
         id: deploy_bicep
         run: |
           DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
-            # First run a what-if operation to check for potential issues
-          echo "Running what-if deployment validation..."          # Extract ACR name from the registry URL for what-if
+          
+          # Check if managed identity exists before deployment
+          echo "Verifying managed identity 'mortgageapp-identity' exists..."
+          identity_exists=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'id' -o tsv 2>/dev/null || echo "")
+          if [ -z "$identity_exists" ]; then
+            echo "Warning: Managed identity 'mortgageapp-identity' does not exist. Creating it now..."
+            az identity create --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --location ${{ env.LOCATION }}
+          else
+            echo "Managed identity 'mortgageapp-identity' exists: $identity_exists"
+          fi
+          
+          # First run a what-if operation to check for potential issues
+          echo "Running what-if deployment validation..."
+          
+          # Extract ACR name from the registry URL for what-if
           full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
           acr_in_same_rg="false"
           if [[ $full_registry_url == *.azurecr.io ]]; then
@@ -228,6 +320,29 @@ jobs:
             fi
           fi
           
+          # Verify container registry and check permissions
+          echo "Verifying container registry permissions and network rules..."
+          if [[ -n "$acr_name" ]]; then
+            echo "Checking ACR $acr_name network rules..."
+            acr_network=$(az acr show --name "$acr_name" --query 'networkRuleSet.defaultAction' -o tsv 2>/dev/null || echo "")
+            echo "ACR network default action: $acr_network"
+            
+            # Check if managed identity has ACR Pull role
+            identity_principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
+            acr_id=$(az acr show --name "$acr_name" --query id -o tsv 2>/dev/null || echo "")
+            if [[ -n "$acr_id" && -n "$identity_principal_id" ]]; then
+              echo "Checking if managed identity has AcrPull role on ACR..."
+              role_assignments=$(az role assignment list --assignee "$identity_principal_id" --scope "$acr_id" --query "[?roleDefinitionName=='AcrPull'].roleDefinitionName" -o tsv)
+              if [ -z "$role_assignments" ]; then
+                echo "Managed identity does not have AcrPull role on ACR. Adding role assignment..."
+                az role assignment create --assignee "$identity_principal_id" --role "AcrPull" --scope "$acr_id"
+              else
+                echo "Managed identity already has AcrPull role on ACR."
+              fi
+            fi
+          fi
+          
+          echo "Running what-if deployment..."
           az deployment group what-if \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
@@ -238,7 +353,8 @@ jobs:
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
               assignAcrRoles=$acr_in_same_rg \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}
-            # Now run the actual deployment
+          
+          # Now run the actual deployment with increased timeout and debugging
           echo "Running actual deployment..."
           
           # Check if ACR is in same resource group to determine if we should try to assign roles
@@ -256,6 +372,11 @@ jobs:
             fi
           fi
           
+          # Deploy with debug logging enabled
+          az config set core.collect_telemetry=yes
+          az config set extension.use_dynamic_install=yes_without_prompt
+          
+          echo "Starting Bicep deployment with verbose logging..."
           az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
@@ -266,7 +387,9 @@ jobs:
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
               assignAcrRoles=$acr_in_same_rg \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
-            --name $DEPLOYMENT_NAME
+            --name $DEPLOYMENT_NAME \
+            --verbose \
+            --debug
 
           echo "Deployment finished. Getting outputs:"
           az deployment group show \
@@ -274,9 +397,22 @@ jobs:
             --name $DEPLOYMENT_NAME \
             -o json > deployment-full.json
 
-          cat deployment-full.json
+          # Extract and display outputs
           jq '.properties.outputs' deployment-full.json > bicep-outputs.json
-          cat bicep-outputs.json   
+          cat bicep-outputs.json
+          
+          # Check if deployment encountered any issues
+          deployment_state=$(jq -r '.properties.provisioningState' deployment-full.json)
+          echo "Deployment state: $deployment_state"
+          
+          if [[ "$deployment_state" != "Succeeded" ]]; then
+            echo "Warning: Deployment did not complete successfully. Checking for errors..."
+            # Display errors if available
+            jq -r '.properties.error' deployment-full.json || echo "No error details available in deployment output"
+            
+            # Check activity logs for more information
+            echo "Checking Azure activity logs for deployment errors..."
+            az monitor activity-log list --resource-group ${{ env.RESOURCE_GROUP }} --correlation-id $(jq -r '.properties.correlationId' deployment-full.json) --max-events 10
 
       - name: Get Storage, SQL Server, and SQL DB Names from Bicep Outputs
         id: get_resource_names
@@ -293,6 +429,60 @@ jobs:
         run: |
           appinsights_name=$(jq -r '.appInsightsName.value' bicep-outputs.json)
           echo "appinsights_name=$appinsights_name" >> $GITHUB_OUTPUT
+
+      # Add a verification step to check container app status
+      - name: Check Container App Health
+        run: |
+          echo "Checking container app status..."
+          
+          # Check status for each container app
+          for app in loan-processing-service customer-service web-ui; do
+            echo "====== Checking status for container app '$app' ======"
+            
+            # Check if app exists and get status
+            app_exists=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$app'].id" -o tsv)
+            
+            if [ -n "$app_exists" ]; then
+              echo "Container app '$app' exists. Getting status..."
+              
+              # Get basic status
+              status=$(az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.provisioningState" -o tsv)
+              echo "Provisioning state: $status"
+              
+              # Get latest revision status
+              echo "Revision status:"
+              az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --output table
+              
+              # Get container app logs
+              echo "Container logs (last 20 lines):"
+              az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 20 || echo "Could not retrieve logs"
+              
+              # Check ingress configuration
+              echo "Ingress configuration:"
+              az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.configuration.ingress" -o json
+              
+              # If app isn't running properly, provide more information
+              if [[ "$status" != "Succeeded" ]]; then
+                echo "Warning: Container app is not in 'Succeeded' state. Additional diagnostics:"
+                
+                # Get container app environment status
+                env_name=$(az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.managedEnvironmentId" -o tsv | awk -F'/' '{print $NF}')
+                echo "Container app environment status ($env_name):"
+                az containerapp env show --name $env_name --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.provisioningState" -o tsv
+                
+                # Check if there are any activity log errors
+                echo "Recent activity logs for this resource:"
+                az monitor.activity-log list --resource-group ${{ env.RESOURCE_GROUP }} --resource-provider Microsoft.App --resource-type containerApps --resource-name $app --max-events 3
+              fi
+            else
+              echo "Error: Container app '$app' does not exist after deployment!"
+            fi
+            echo ""
+          done
+          
+          # Check container app environment status
+          echo "Container app environment status:"
+          az containerapp env list --resource-group ${{ env.RESOURCE_GROUP }} --output table
 
       - name: Get Managed Identity Principal ID
         id: get_managed_identity
