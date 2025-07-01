@@ -20,6 +20,8 @@ Key features:
 ## Recent Changes
 
 - 2025-07-01: Moved blob container creation from GitHub Actions workflow to Bicep template to avoid issues with network rules and Azure Policies
+- 2025-07-02: Fixed health check configuration for Loan Processing Service in Bicep template to use port 8080 and the correct "/health" endpoint for both liveness and readiness probes
+- 2025-07-03: Enhanced security by using system-assigned managed identities for Container Registry authentication instead of username/password credentials
 
 ---
 
@@ -188,6 +190,23 @@ graph TD
 - For local development, you can build and run each service using Docker Compose or individual Docker commands.
 - Health endpoints and readiness probes are implemented for all services.
 - Managed identities are used for secure access to SQL and Blob Storage—no secrets in code.
+
+### Security Implementation
+
+- **System-Assigned Managed Identities**: Each container app uses a system-assigned managed identity to authenticate with Azure Container Registry, Azure SQL, and Azure Blob Storage.
+- **Azure AD-Only Authentication**: SQL Server is configured to use Azure AD authentication only (no SQL authentication) for enhanced security.
+- **Role-Based Access Control**: Proper RBAC is implemented for all resources:
+  - Container apps are granted AcrPull role to pull images from Azure Container Registry
+  - Container apps are granted appropriate roles on SQL Database and Blob Storage
+  - GitHub Actions service principal is granted SQL Server Contributor and AcrPull roles at appropriate scopes
+- **No Credentials in Container Images**: All authentication is done via managed identities, eliminating the need for storing credentials.
+
+### Health Check Implementation
+
+- **Loan Processing Service**: Uses ASP.NET Core's built-in health checks at the `/health` endpoint on port 8080. The health check is mapped in Program.cs with `app.MapHealthChecks("/health")`.
+- **Customer Service**: Uses Spring Boot Actuator for health checks at `/actuator/health/liveness` and `/actuator/health/readiness` on port 8080.
+- Each service's Dockerfile includes a `HEALTHCHECK` command to verify container health at runtime.
+- Container Apps are configured with both liveness and readiness probes to ensure proper startup and operation.
 
 ---
 

@@ -135,11 +135,10 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
 param loanProcessingImage string
 param customerServiceImage string
 param webUiImage string
-@secure()
-param registryUsername string
-@secure()
-param registryPassword string
 param registryServer string
+
+// Get the ACR resource ID from the registry server name
+var acrResourceId = '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/Microsoft.ContainerRegistry/registries/${last(split(registryServer, '.'))}'
 
 // Loan Processing Service
 resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
@@ -150,24 +149,17 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
   properties: {
     managedEnvironmentId: containerEnv.id
-    configuration: {
-      ingress: {
+    configuration: {      ingress: {
         external: true
         targetPort: 8080
       }
       registries: [
         {
           server: registryServer
-          username: registryUsername
-          passwordSecretRef: 'registry-password'
+          identity: 'system'
         }
       ]
-      secrets: [
-        {
-          name: 'registry-password'
-          value: registryPassword
-        }
-      ]
+      secrets: []
       activeRevisionsMode: 'Single'
     }
     template: {
@@ -197,8 +189,8 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               type: 'Liveness'
               httpGet: {
-                path: '/health/live'
-                port: 80
+                path: '/health'
+                port: 8080
               }
               initialDelaySeconds: 10
               periodSeconds: 10
@@ -206,8 +198,8 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               type: 'Readiness'
               httpGet: {
-                path: '/health/ready'
-                port: 80
+                path: '/health'
+                port: 8080
               }
               initialDelaySeconds: 10
               periodSeconds: 10
@@ -240,16 +232,10 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryServer
-          username: registryUsername
-          passwordSecretRef: 'registry-password'
+          identity: 'system'
         }
       ]
-      secrets: [
-        {
-          name: 'registry-password'
-          value: registryPassword
-        }
-      ]
+      secrets: []
       activeRevisionsMode: 'Single'
     }
     template: {
@@ -313,16 +299,10 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryServer
-          username: registryUsername
-          passwordSecretRef: 'registry-password'
+          identity: 'system'
         }
       ]
-      secrets: [
-        {
-          name: 'registry-password'
-          value: registryPassword
-        }
-      ]
+      secrets: []
       activeRevisionsMode: 'Single'
     }
     template: {
@@ -373,6 +353,39 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
 resource loadTest 'Microsoft.LoadTestService/loadTests@2022-12-01' = {
   name: 'mortgage-loadtest'
   location: location
+}
+
+// Add ACR pull role assignment for loan processing service
+resource loanProcessingAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(loanProcessingApp.id, acrResourceId, 'AcrPull')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
+    principalId: loanProcessingApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Add ACR pull role assignment for customer service
+resource customerServiceAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(customerServiceApp.id, acrResourceId, 'AcrPull')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
+    principalId: customerServiceApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Add ACR pull role assignment for web UI
+resource webUiAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(webUiApp.id, acrResourceId, 'AcrPull')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
+    principalId: webUiApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
 }
 
 output sqlServerName string = sqlServer.name

@@ -10,6 +10,9 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     env:
+      # Container registry connection information
+      # Note: AZURE_CONTAINER_REGISTRY_USERNAME and AZURE_CONTAINER_REGISTRY_PASSWORD are only needed for pushing images 
+      # Container apps now pull images using system-assigned managed identities
       AZURE_CONTAINER_REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
       AZURE_CONTAINER_REGISTRY_USERNAME: ${{ secrets.AZURE_CONTAINER_REGISTRY_USERNAME }}
       AZURE_CONTAINER_REGISTRY_PASSWORD: ${{ secrets.AZURE_CONTAINER_REGISTRY_PASSWORD }}
@@ -75,6 +78,35 @@ jobs:
             fi
           else
             echo "Service principal already has SQL Server Contributor role"
+          fi
+
+          # Grant the service principal AcrPull role on the Azure Container Registry
+          echo "Setting up role assignment for ACR access..."
+          # Get the ACR resource ID
+          acr_id=$(az acr show --name $(echo ${{ env.AZURE_CONTAINER_REGISTRY }} | cut -d'.' -f1) --query id -o tsv)
+          
+          if [ -z "$acr_id" ]; then
+            echo "Error: Failed to get ACR resource ID"
+            exit 1
+          fi
+          
+          echo "ACR resource ID: $acr_id"
+          
+          # Check if role assignment exists
+          existing_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+          
+          if [ -z "$existing_acr_role" ]; then
+            echo "Granting AcrPull role to service principal on ACR"
+            az role assignment create --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id"
+            
+            # Verify the role was assigned
+            verify_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+            if [ -z "$verify_acr_role" ]; then
+              echo "Error: Failed to assign AcrPull role"
+              exit 1
+            fi
+          else
+            echo "Service principal already has AcrPull role on ACR"
           fi
 
       - name: Log in to Azure Container Registry
@@ -152,8 +184,7 @@ jobs:
         id: deploy_bicep
         run: |
           DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
-          
-          # First run a what-if operation to check for potential issues
+            # First run a what-if operation to check for potential issues
           echo "Running what-if deployment validation..."
           az deployment group what-if \
             --resource-group ${{ env.RESOURCE_GROUP }} \
@@ -163,8 +194,6 @@ jobs:
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
-              registryUsername=${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }} \
-              registryPassword=${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }} \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}
           
           # Now run the actual deployment
@@ -173,13 +202,10 @@ jobs:
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
-              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \
-              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
+              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
-              registryUsername=${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }} \
-              registryPassword=${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }} \
-              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
+              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}\
             --name $DEPLOYMENT_NAME
 
           echo "Deployment finished. Getting outputs:"
