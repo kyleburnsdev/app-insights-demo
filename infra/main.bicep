@@ -159,10 +159,9 @@ var registryName = isAzureCrIo ? registryParts[0] : registryServer
 var acrResourceId = '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/Microsoft.ContainerRegistry/registries/${registryName}'
 
 // Loan Processing Service
-// Define the user-assigned managed identity
 resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'loan-processing-service'
-  location: location
+  location: location  // Dependencies on managedIdentity and containerEnv are automatically inferred
   identity: {
     type: 'SystemAssigned, UserAssigned'
     userAssignedIdentities: {
@@ -208,9 +207,19 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: sqlDbName
             }, {
               name: 'STORAGE_ACCOUNT_NAME'
-              value: storage.name            }, {
+              value: storage.name            
+            }, {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               value: appInsights.properties.ConnectionString
+            }, {
+              name: 'ASPNETCORE_URLS'
+              value: 'http://+:8080'  // Ensure app listens on the right port
+            }, {
+              name: 'CONTAINER_APP_ENV'
+              value: 'true'  // Help the app know it's running in a container app
+            }, {
+              name: 'CONTAINER_APP_STARTUP'
+              value: 'true'  // Indicate to app it's in startup phase
             }
           ]
           probes: [

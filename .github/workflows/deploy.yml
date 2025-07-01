@@ -44,6 +44,48 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
           
+      # Ensure container app environment is properly deleted before deployment
+      - name: Verify Container App Environment is Clean
+        run: |
+          echo "Checking for existing container app environment..."
+          
+          # Check if environment exists
+          env_exists=$(az containerapp env list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='mortgageapp-env'].id" -o tsv)
+          
+          if [ -n "$env_exists" ]; then
+            echo "Container app environment 'mortgageapp-env' exists. Checking if any container apps are using it..."
+            
+            # Check for any container apps using this environment
+            apps_using_env=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?properties.managedEnvironmentId=='$env_exists'].name" -o tsv)
+            
+            if [ -n "$apps_using_env" ]; then
+              echo "Found container apps using this environment. Deleting them first..."
+              for app in $apps_using_env; do
+                echo "Deleting container app '$app'..."
+                az containerapp delete --name $app --resource-group ${{ env.RESOURCE_GROUP }} --yes
+              done
+              
+              echo "Waiting 30 seconds for resources to be released..."
+              sleep 30
+            fi
+            
+            echo "Deleting container app environment..."
+            az containerapp env delete --name mortgageapp-env --resource-group ${{ env.RESOURCE_GROUP }} --yes
+            
+            echo "Waiting 60 seconds for resources to be fully released..."
+            sleep 60
+            
+            # Verify environment is deleted
+            env_still_exists=$(az containerapp env list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='mortgageapp-env'].id" -o tsv)
+            if [ -n "$env_still_exists" ]; then
+              echo "Warning: Container app environment still exists after deletion attempt. This may cause deployment issues."
+            else
+              echo "Container app environment successfully deleted."
+            fi
+          else
+            echo "No existing container app environment found. Clean state for deployment."
+          fi
+
       # Create managed identity early to ensure it exists before container app deployment
       - name: Create Managed Identity
         id: create_managed_identity
@@ -258,14 +300,18 @@ jobs:
               # Get the environment ID from the container app
               current_env_id=$(az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.managedEnvironmentId" -o tsv)
               current_env_name=$(echo $current_env_id | awk -F'/' '{print $NF}')
-              
-              # Get the revision ID to check status before deleting
+                # Get the revision ID to check status before deleting
               echo "Getting revisions for container app '$app'..."
-              az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --output table
+              revisions=$(az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "[].name" -o tsv)
               
-              # Get diagnostic logs to help understand any issues
-              echo "Getting logs for container app '$app'..."
-              az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 100
+              # Only try to get logs if revisions exist
+              if [ -n "$revisions" ]; then
+                echo "Found revisions: $revisions"
+                echo "Getting logs for container app '$app'..."
+                az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 100 || echo "Could not retrieve logs, continuing..."
+              else
+                echo "No revisions found for container app '$app', skipping logs"
+              fi
               
               echo "Container app '$app' exists in environment '$current_env_name'. Deleting container app..."
               
@@ -287,7 +333,32 @@ jobs:
           env_exists=$(az containerapp env list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='mortgageapp-env'].id" -o tsv)
           if [ -n "$env_exists" ]; then
             echo "Container app environment found. Getting status..."
-            az containerapp env show --name mortgageapp-env --resource-group ${{ env.RESOURCE_GROUP }}          fi
+            env_status=$(az containerapp env show --name mortgageapp-env --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.provisioningState" -o tsv)
+            echo "Container app environment status: $env_status"
+            
+            # If environment is in a failed state, delete it
+            if [[ "$env_status" == "Failed" ]]; then
+              echo "Container app environment is in Failed state. Checking if any container apps still exist..."
+              
+              remaining_apps=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[].name" -o tsv)
+              if [ -n "$remaining_apps" ]; then
+                echo "Some container apps still exist. Deleting them first..."
+                for app in $remaining_apps; do
+                  echo "Deleting container app '$app'..."
+                  az containerapp delete --name $app --resource-group ${{ env.RESOURCE_GROUP }} --yes
+                done
+                
+                echo "Waiting 30 seconds for resources to be released..."
+                sleep 30
+              fi
+              
+              echo "Deleting failed container app environment..."
+              az containerapp env delete --name mortgageapp-env --resource-group ${{ env.RESOURCE_GROUP }} --yes
+              
+              echo "Waiting 60 seconds for resources to be fully released..."
+              sleep 60
+            fi
+          fi
           
           echo "Container app cleanup completed."
           
@@ -387,9 +458,61 @@ jobs:
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
               assignAcrRoles=$acr_in_same_rg \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
-            --name $DEPLOYMENT_NAME \
+            --            name $DEPLOYMENT_NAME \
             --verbose \
-            --debug
+            --debug \
+            --no-wait
+
+          echo "Deployment started in background. Will monitor status..."
+          
+          # Poll for deployment completion
+          TIMEOUT_SECONDS=900  # 15 minutes timeout
+          POLL_INTERVAL=30     # Check every 30 seconds
+          START_TIME=$(date +%s)
+          CURRENT_TIME=$(date +%s)
+          
+          while [ $((CURRENT_TIME - START_TIME)) -lt $TIMEOUT_SECONDS ]; do
+            echo "Checking deployment status at $(date)..."
+            DEPLOYMENT_STATUS=$(az deployment group show \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --name $DEPLOYMENT_NAME \
+              --query "properties.provisioningState" -o tsv)
+              
+            echo "Current status: $DEPLOYMENT_STATUS"
+            
+            # Check if deployment completed
+            if [[ "$DEPLOYMENT_STATUS" == "Succeeded" ]]; then
+              echo "Deployment completed successfully!"
+              break
+            elif [[ "$DEPLOYMENT_STATUS" == "Failed" || "$DEPLOYMENT_STATUS" == "Canceled" ]]; then
+              echo "Deployment failed or was canceled!"
+              # Get error details
+              az deployment group show \
+                --resource-group ${{ env.RESOURCE_GROUP }} \
+                --name $DEPLOYMENT_NAME \
+                --query "properties.error" -o json
+              echo "Checking Activity Logs for more information..."
+              # Check resource-specific activity logs
+              az monitor activity-log list \
+                --resource-group ${{ env.RESOURCE_GROUP }} \
+                --caller "Microsoft.Resources" \
+                --status "Failed" \
+                --offset 1h \
+                --max-events 10
+              exit 1
+            else
+              echo "Deployment still in progress. Waiting $POLL_INTERVAL seconds..."
+              sleep $POLL_INTERVAL
+            fi
+            
+            CURRENT_TIME=$(date +%s)
+          done
+          
+          # Check for timeout
+          if [ $((CURRENT_TIME - START_TIME)) -ge $TIMEOUT_SECONDS ]; then
+            echo "Deployment monitoring timed out after $((TIMEOUT_SECONDS / 60)) minutes!"
+            echo "Deployment may still be in progress, but we'll proceed with output extraction."
+          fi
 
           echo "Deployment finished. Getting outputs:"
           az deployment group show \
@@ -412,7 +535,7 @@ jobs:
             
             # Check activity logs for more information
             echo "Checking Azure activity logs for deployment errors..."
-            az monitor activity-log list --resource-group ${{ env.RESOURCE_GROUP }} --correlation-id $(jq -r '.properties.correlationId' deployment-full.json) --max-events 10
+            az monitor.activity-log list --resource-group ${{ env.RESOURCE_GROUP }} --correlation-id $(jq -r '.properties.correlationId' deployment-full.json) --max-events 10
 
       - name: Get Storage, SQL Server, and SQL DB Names from Bicep Outputs
         id: get_resource_names
@@ -448,14 +571,20 @@ jobs:
               # Get basic status
               status=$(az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.provisioningState" -o tsv)
               echo "Provisioning state: $status"
-              
-              # Get latest revision status
+                # Get latest revision status
               echo "Revision status:"
-              az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --output table
+              revisions=$(az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "[].name" -o tsv)
               
-              # Get container app logs
-              echo "Container logs (last 20 lines):"
-              az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 20 || echo "Could not retrieve logs"
+              if [ -n "$revisions" ]; then
+                echo "Revisions found:"
+                az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --output table
+                
+                # Get container app logs
+                echo "Container logs (last 20 lines):"
+                az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 20 || echo "Could not retrieve logs"
+              else
+                echo "No revisions found for container app '$app', skipping revision list and logs"
+              fi
               
               # Check ingress configuration
               echo "Ingress configuration:"
