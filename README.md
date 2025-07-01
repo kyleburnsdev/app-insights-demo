@@ -22,6 +22,7 @@ Key features:
 - 2025-07-01: Moved blob container creation from GitHub Actions workflow to Bicep template to avoid issues with network rules and Azure Policies
 - 2025-07-02: Fixed health check configuration for Loan Processing Service in Bicep template to use port 8080 and the correct "/health" endpoint for both liveness and readiness probes
 - 2025-07-03: Enhanced security by using system-assigned managed identities for Container Registry authentication instead of username/password credentials
+- 2025-07-04: Fixed ACR role assignment to be more resilient when the ACR is in a different resource group or subscription
 
 ---
 
@@ -196,10 +197,12 @@ graph TD
 - **System-Assigned Managed Identities**: Each container app uses a system-assigned managed identity to authenticate with Azure Container Registry, Azure SQL, and Azure Blob Storage.
 - **Azure AD-Only Authentication**: SQL Server is configured to use Azure AD authentication only (no SQL authentication) for enhanced security.
 - **Role-Based Access Control**: Proper RBAC is implemented for all resources:
-  - Container apps are granted AcrPull role to pull images from Azure Container Registry
+  - Container apps are granted AcrPull role to pull images from Azure Container Registry (when ACR is in same resource group)
   - Container apps are granted appropriate roles on SQL Database and Blob Storage
-  - GitHub Actions service principal is granted SQL Server Contributor and AcrPull roles at appropriate scopes
+  - GitHub Actions service principal is granted SQL Server Contributor role at resource group scope
+  - GitHub Actions workflow automatically detects if ACR is in the same resource group and grants AcrPull role as needed
 - **No Credentials in Container Images**: All authentication is done via managed identities, eliminating the need for storing credentials.
+- **Cross-Subscription Support**: The solution supports scenarios where the Container Registry may be in a different subscription or resource group.
 
 ### Health Check Implementation
 

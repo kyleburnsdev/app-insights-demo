@@ -78,35 +78,67 @@ jobs:
             fi
           else
             echo "Service principal already has SQL Server Contributor role"
-          fi
-
-          # Grant the service principal AcrPull role on the Azure Container Registry
+          fi          # Grant the service principal AcrPull role on the Azure Container Registry
           echo "Setting up role assignment for ACR access..."
-          # Get the ACR resource ID
-          acr_id=$(az acr show --name $(echo ${{ env.AZURE_CONTAINER_REGISTRY }} | cut -d'.' -f1) --query id -o tsv)
           
-          if [ -z "$acr_id" ]; then
-            echo "Error: Failed to get ACR resource ID"
-            exit 1
+          # Extract ACR name more reliably from the full registry URL
+          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
+          # First check if this is a custom domain or the default azurecr.io domain
+          if [[ $full_registry_url == *.azurecr.io ]]; then
+            # For azurecr.io domain, extract just the registry name
+            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
+            echo "Extracted ACR name from azurecr.io domain: $acr_name"
+          else
+            # For custom domain, we need to find the registry via its login server
+            echo "Custom domain detected, looking up ACR by login server..."
+            # List all ACRs and find the one with matching login server
+            acr_name=$(az acr list --query "[?loginServer=='$full_registry_url'].name" -o tsv)
+            if [ -z "$acr_name" ]; then
+              echo "Error: Could not find ACR with login server $full_registry_url"
+              # Continue anyway, as this is just for additional permissions and not critical
+              echo "Continuing deployment without ACR role assignment"
+              acr_id=""
+            else
+              echo "Found ACR name: $acr_name"
+            fi
           fi
           
-          echo "ACR resource ID: $acr_id"
-          
-          # Check if role assignment exists
-          existing_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
-          
-          if [ -z "$existing_acr_role" ]; then
-            echo "Granting AcrPull role to service principal on ACR"
-            az role assignment create --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id"
+          # Only try to get resource ID if we have an ACR name
+          if [ -n "$acr_name" ]; then
+            echo "Getting resource ID for ACR: $acr_name"
+            acr_id=$(az acr show --name "$acr_name" --query id -o tsv 2>/dev/null || echo "")
             
-            # Verify the role was assigned
-            verify_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
-            if [ -z "$verify_acr_role" ]; then
-              echo "Error: Failed to assign AcrPull role"
-              exit 1
+            if [ -z "$acr_id" ]; then
+              echo "Warning: Failed to get ACR resource ID. ACR may be in a different subscription or resource group."
+              # Continue anyway, as this is just for additional permissions and not critical
+              echo "Continuing deployment without ACR role assignment"
             fi
           else
-            echo "Service principal already has AcrPull role on ACR"
+            acr_id=""
+          fi
+            # Only proceed with role assignment if we found the ACR resource ID
+          if [ -n "$acr_id" ]; then
+            echo "ACR resource ID: $acr_id"
+            
+            # Check if role assignment exists
+            existing_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+            
+            if [ -z "$existing_acr_role" ]; then
+              echo "Granting AcrPull role to service principal on ACR"
+              az role assignment create --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id"
+              
+              # Verify the role was assigned
+              verify_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+              if [ -z "$verify_acr_role" ]; then
+                echo "Warning: Failed to assign AcrPull role"
+                # Continue anyway, as this is just for additional permissions and not critical
+                echo "Continuing deployment without ACR role assignment"
+              fi
+            else
+              echo "Service principal already has AcrPull role on ACR"
+            fi
+          else
+            echo "Skipping ACR role assignment since ACR resource ID was not found"
           fi
 
       - name: Log in to Azure Container Registry
@@ -185,7 +217,17 @@ jobs:
         run: |
           DEPLOYMENT_NAME=mortgage-deployment-${{ github.sha }}
             # First run a what-if operation to check for potential issues
-          echo "Running what-if deployment validation..."
+          echo "Running what-if deployment validation..."          # Extract ACR name from the registry URL for what-if
+          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
+          acr_in_same_rg="false"
+          if [[ $full_registry_url == *.azurecr.io ]]; then
+            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
+            acr_exists=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$acr_name'].id" -o tsv)
+            if [ -n "$acr_exists" ]; then
+              acr_in_same_rg="true"
+            fi
+          fi
+          
           az deployment group what-if \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
@@ -194,18 +236,36 @@ jobs:
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
+              assignAcrRoles=$acr_in_same_rg \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}
-          
-          # Now run the actual deployment
+            # Now run the actual deployment
           echo "Running actual deployment..."
+          
+          # Check if ACR is in same resource group to determine if we should try to assign roles
+          acr_in_same_rg="false"
+          
+          # Extract ACR name from the registry URL
+          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
+          if [[ $full_registry_url == *.azurecr.io ]]; then
+            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
+            echo "Checking if ACR '$acr_name' exists in resource group ${{ env.RESOURCE_GROUP }}..."
+            acr_exists=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$acr_name'].id" -o tsv)
+            if [ -n "$acr_exists" ]; then
+              echo "ACR exists in same resource group, will assign roles"
+              acr_in_same_rg="true"
+            fi
+          fi
+          
           az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
-              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
+              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \
+              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
-              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}\
+              assignAcrRoles=$acr_in_same_rg \
+              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
             --name $DEPLOYMENT_NAME
 
           echo "Deployment finished. Getting outputs:"

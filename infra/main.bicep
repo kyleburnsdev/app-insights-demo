@@ -137,8 +137,12 @@ param customerServiceImage string
 param webUiImage string
 param registryServer string
 
-// Get the ACR resource ID from the registry server name
-var acrResourceId = '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/Microsoft.ContainerRegistry/registries/${last(split(registryServer, '.'))}'
+// Extract ACR name from registry server - assumes standard Azure Container Registry pattern
+var registryParts = split(registryServer, '.')
+var isAzureCrIo = length(registryParts) >= 3 && registryParts[1] == 'azurecr' && registryParts[2] == 'io'
+var registryName = isAzureCrIo ? registryParts[0] : registryServer
+// This is used for role assignments; if the registry is in another subscription/resource group, role assignments will need manual setup
+var acrResourceId = '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/Microsoft.ContainerRegistry/registries/${registryName}'
 
 // Loan Processing Service
 resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
@@ -355,8 +359,11 @@ resource loadTest 'Microsoft.LoadTestService/loadTests@2022-12-01' = {
   location: location
 }
 
+// Check if the ACR is expected to be in this resource group (only assign roles if it is)
+param assignAcrRoles bool = true
+
 // Add ACR pull role assignment for loan processing service
-resource loanProcessingAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource loanProcessingAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAcrRoles) {
   name: guid(loanProcessingApp.id, acrResourceId, 'AcrPull')
   scope: resourceGroup()
   properties: {
@@ -367,7 +374,7 @@ resource loanProcessingAcrPullRole 'Microsoft.Authorization/roleAssignments@2022
 }
 
 // Add ACR pull role assignment for customer service
-resource customerServiceAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource customerServiceAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAcrRoles) {
   name: guid(customerServiceApp.id, acrResourceId, 'AcrPull')
   scope: resourceGroup()
   properties: {
@@ -378,7 +385,7 @@ resource customerServiceAcrPullRole 'Microsoft.Authorization/roleAssignments@202
 }
 
 // Add ACR pull role assignment for web UI
-resource webUiAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource webUiAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAcrRoles) {
   name: guid(webUiApp.id, acrResourceId, 'AcrPull')
   scope: resourceGroup()
   properties: {
