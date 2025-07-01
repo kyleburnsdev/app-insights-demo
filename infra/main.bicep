@@ -230,7 +230,7 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
                 port: 8080
                 scheme: 'HTTP'
               }
-              initialDelaySeconds: 120
+              initialDelaySeconds: 60
               periodSeconds: 30
               timeoutSeconds: 10
               failureThreshold: 5
@@ -243,7 +243,7 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
                 port: 8080
                 scheme: 'HTTP'
               }
-              initialDelaySeconds: 120
+              initialDelaySeconds: 60
               periodSeconds: 30
               timeoutSeconds: 10
               failureThreshold: 5
@@ -312,7 +312,7 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/actuator/health/liveness'
                 port: 8080
               }
-              initialDelaySeconds: 120
+              initialDelaySeconds: 60
               periodSeconds: 30
               timeoutSeconds: 10
               failureThreshold: 5
@@ -324,7 +324,7 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/actuator/health/readiness'
                 port: 8080
               }
-              initialDelaySeconds: 120
+              initialDelaySeconds: 60
               periodSeconds: 30
               timeoutSeconds: 10
               failureThreshold: 5
@@ -389,7 +389,7 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/'
                 port: 80
               }
-              initialDelaySeconds: 90
+              initialDelaySeconds: 60
               periodSeconds: 30
               timeoutSeconds: 10
               failureThreshold: 5
@@ -401,7 +401,7 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/'
                 port: 80
               }
-              initialDelaySeconds: 90
+              initialDelaySeconds: 60
               periodSeconds: 30
               timeoutSeconds: 10
               failureThreshold: 5
