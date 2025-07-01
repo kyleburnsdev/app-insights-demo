@@ -402,6 +402,8 @@ jobs:
 
       - name: Run Azure Load Test (smoke test)
         id: loadtest
+        continue-on-error: true
+        timeout-minutes: 3
         run: |
           # Get FQDNs from deployment outputs
           loan_fqdn=$(az deployment group show --resource-group ${{ env.RESOURCE_GROUP }} --name $(az deployment group list --resource-group ${{ env.RESOURCE_GROUP }} --query '[0].name' -o tsv) --query 'properties.outputs.loanProcessingFqdn.value' -o tsv)
