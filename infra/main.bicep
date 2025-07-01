@@ -82,6 +82,21 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
+// Define the default blob service
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
+  name: 'default'
+  parent: storage
+}
+
+// Create the container for mortgage app data
+resource mortgageDataContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  name: 'mortgage-data'
+  parent: blobService
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-06-01' = {
   name: logAnalyticsWorkspaceName
   location: location

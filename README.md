@@ -17,6 +17,10 @@ Key features:
 - Automated load testing and release annotations
 - Infrastructure as Code (Bicep) and CI/CD (GitHub Actions)
 
+## Recent Changes
+
+- 2025-07-01: Moved blob container creation from GitHub Actions workflow to Bicep template to avoid issues with network rules and Azure Policies
+
 ---
 
 ## Solution Architecture
