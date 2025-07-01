@@ -349,7 +349,7 @@ jobs:
             --server $sql_server_name \
             --name "GithubActionsRunner-$GITHUB_RUN_ID" \
             --yes
-            
+
       - name: Create Blob Storage Container
         run: |
           storage_account=${{ steps.get_resource_names.outputs.storage_account_name }}
@@ -367,24 +367,29 @@ jobs:
           RUNNER_IP=$(curl -s https://api.ipify.org)
           echo "Current runner's public IP: $RUNNER_IP"
           
-          # Add the runner's IP to the storage account network rules temporarily
-          echo "Adding GitHub Actions runner IP to storage account network rules..."
-          az storage account network-rule add \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --account-name $storage_account \
-            --ip-address $RUNNER_IP
-            
-          # Update the default action to deny (if not already set)
+          # Check and save the current network rules state
+          echo "Checking current network rules configuration..."
+          az storage account show --name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} --query networkRuleSet -o json > original_network_rules.json
+          cat original_network_rules.json
+          
+          # Save the original default action
+          original_default_action=$(jq -r '.defaultAction' original_network_rules.json)
+          echo "Original default action: $original_default_action"
+          
+          # Temporarily modify the network rule set to allow all access
+          echo "Temporarily modifying network rules to allow access from the runner..."
           az storage account update \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --name $storage_account \
-            --default-action Allow \
-            --bypass AzureServices
-            
-          # Wait a short time for the network rule to take effect
-          echo "Waiting 15 seconds for network rule to take effect..."
-          sleep 15
-            
+            --default-action Allow
+          
+          # Wait a short time for the network rule change to take effect
+          echo "Waiting for network rule changes to take effect..."
+          sleep 30
+          
+          echo "Current network rules after update:"
+          az storage account show --name $storage_account --resource-group ${{ env.RESOURCE_GROUP }} --query networkRuleSet -o json
+          
           # Check if container exists first (idempotency) - using Azure AD auth
           echo "Checking if container exists using Azure AD authentication..."
           container_exists=$(az storage container exists \
@@ -405,21 +410,18 @@ jobs:
             echo "Container created successfully."
           fi
           
-          # Remove the temporary network rule for the runner's IP
-          echo "Removing GitHub Actions runner IP from storage account network rules..."
-          az storage account network-rule remove \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --account-name $storage_account \
-            --ip-address $RUNNER_IP
-            
-          # Restore the default action if it was previously set to deny
-          # Note: If your security policy requires deny as default, uncomment the next block
-          # az storage account update \
-          #   --resource-group ${{ env.RESOURCE_GROUP }} \
-          #   --name $storage_account \
-          #   --default-action Deny
+          # If original default action was 'Deny', restore it
+          if [ "$original_default_action" = "Deny" ]; then
+            echo "Restoring original network rules with default action: Deny"
+            az storage account update \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --name $storage_account \
+              --default-action Deny
+          else
+            echo "Original default action was not 'Deny', no need to restore."
+          fi
           
-          echo "Storage account network rules restored."
+          echo "Storage account operations completed."
 
       - name: Assign Storage and SQL roles to system-assigned managed identities
         run: |
