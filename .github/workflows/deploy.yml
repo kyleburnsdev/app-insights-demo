@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Container registry connection information
-      # Note: AZURE_CONTAINER_REGISTRY_USERNAME and AZURE_CONTAINER_REGISTRY_PASSWORD are only needed for pushing images 
-      # Container apps now pull images using system-assigned managed identities
+      # Note: AZURE_CONTAINER_REGISTRY_USERNAME and AZURE_CONTAINER_REGISTRY_PASSWORD are needed for both
+      # pushing images and for the container apps to pull images (using key-based authentication)
       AZURE_CONTAINER_REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
       AZURE_CONTAINER_REGISTRY_USERNAME: ${{ secrets.AZURE_CONTAINER_REGISTRY_USERNAME }}
       AZURE_CONTAINER_REGISTRY_PASSWORD: ${{ secrets.AZURE_CONTAINER_REGISTRY_PASSWORD }}
@@ -107,44 +107,8 @@ jobs:
           
           echo "principal_id=$principal_id" >> $GITHUB_OUTPUT
           echo "client_id=$client_id" >> $GITHUB_OUTPUT
-          echo "resource_id=$resource_id" >> $GITHUB_OUTPUT
-          
-      # Assign AcrPull role to managed identity
-      - name: Assign AcrPull role to Managed Identity
-        run: |
-          # Extract ACR name from the registry URL
-          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
-          if [[ $full_registry_url == *.azurecr.io ]]; then
-            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
-            echo "Extracted ACR name: $acr_name"
-            
-            # Get ACR resource ID
-            acr_id=$(az acr show --name "$acr_name" --query id -o tsv 2>/dev/null || echo "")
-            
-            if [ -n "$acr_id" ]; then
-              echo "ACR resource ID: $acr_id"
-              
-              # Check if role assignment exists
-              existing_acr_role=$(az role assignment list --assignee "${{ steps.create_managed_identity.outputs.principal_id }}" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
-              
-              if [ -z "$existing_acr_role" ]; then
-                echo "Granting AcrPull role to managed identity on ACR"
-                az role assignment create --assignee "${{ steps.create_managed_identity.outputs.principal_id }}" --role "AcrPull" --scope "$acr_id"
-                
-                # Verify the role was assigned
-                verify_acr_role=$(az role assignment list --assignee "${{ steps.create_managed_identity.outputs.principal_id }}" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
-                if [ -z "$verify_acr_role" ]; then
-                  echo "Warning: Failed to assign AcrPull role to managed identity"
-                fi
-              else
-                echo "Managed identity already has AcrPull role on ACR"
-              fi
-            else
-              echo "Warning: Could not retrieve ACR resource ID"
-            fi
-          else
-            echo "Warning: Could not parse ACR name from URL"
-          fi
+          echo "resource_id=$resource_id" >> $GITHUB_OUTPUT      # We now use key-based authentication for ACR, so we've removed the AcrPull role assignment to managed identity step
+      # The GitHub Actions principal still needs permission to push images to ACR though
 
       # Grant SQL Administrator role to the service principal at resource group level
       - name: Grant SQL Administrator role to service principal
@@ -177,70 +141,52 @@ jobs:
             if [ -z "$verify_role" ]; then
               echo "Error: Failed to assign SQL Server Contributor role"
               exit 1
-            fi
-          else
+            fi          else
             echo "Service principal already has SQL Server Contributor role"
-          fi          # Grant the service principal AcrPull role on the Azure Container Registry
-          echo "Setting up role assignment for ACR access..."
+          fi
+          
+          # Since we're using key-based authentication for container apps to pull from ACR,
+          # we only need to ensure that the GitHub Actions service principal has permissions to push to ACR
+          echo "Setting up role assignment for ACR access (for pushing images)..."
           
           # Extract ACR name more reliably from the full registry URL
           full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
-          # First check if this is a custom domain or the default azurecr.io domain
           if [[ $full_registry_url == *.azurecr.io ]]; then
             # For azurecr.io domain, extract just the registry name
             acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
             echo "Extracted ACR name from azurecr.io domain: $acr_name"
-          else
-            # For custom domain, we need to find the registry via its login server
-            echo "Custom domain detected, looking up ACR by login server..."
-            # List all ACRs and find the one with matching login server
-            acr_name=$(az acr list --query "[?loginServer=='$full_registry_url'].name" -o tsv)
-            if [ -z "$acr_name" ]; then
-              echo "Error: Could not find ACR with login server $full_registry_url"
-              # Continue anyway, as this is just for additional permissions and not critical
-              echo "Continuing deployment without ACR role assignment"
-              acr_id=""
-            else
-              echo "Found ACR name: $acr_name"
-            fi
-          fi
-          
-          # Only try to get resource ID if we have an ACR name
-          if [ -n "$acr_name" ]; then
-            echo "Getting resource ID for ACR: $acr_name"
+            
+            # Get ACR resource ID
             acr_id=$(az acr show --name "$acr_name" --query id -o tsv 2>/dev/null || echo "")
             
-            if [ -z "$acr_id" ]; then
-              echo "Warning: Failed to get ACR resource ID. ACR may be in a different subscription or resource group."
-              # Continue anyway, as this is just for additional permissions and not critical
-              echo "Continuing deployment without ACR role assignment"
-            fi
-          else
-            acr_id=""
-          fi
-            # Only proceed with role assignment if we found the ACR resource ID
-          if [ -n "$acr_id" ]; then
-            echo "ACR resource ID: $acr_id"
-            
-            # Check if role assignment exists
-            existing_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
-            
-            if [ -z "$existing_acr_role" ]; then
-              echo "Granting AcrPull role to service principal on ACR"
-              az role assignment create --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id"
+            if [ -n "$acr_id" ]; then
+              echo "ACR resource ID: $acr_id"
               
-              # Verify the role was assigned
-              verify_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPull" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
-              if [ -z "$verify_acr_role" ]; then
-                echo "Warning: Failed to assign AcrPull role"
-                # Continue anyway, as this is just for additional permissions and not critical
-                echo "Continuing deployment without ACR role assignment"
+              # Check if role assignment exists
+              existing_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPush" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+              
+              if [ -z "$existing_acr_role" ]; then
+                echo "Granting AcrPush role to service principal on ACR"
+                az role assignment create --assignee "$current_sp_id" --role "AcrPush" --scope "$acr_id"
+                
+                # Verify the role was assigned
+                verify_acr_role=$(az role assignment list --assignee "$current_sp_id" --role "AcrPush" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+                if [ -z "$verify_acr_role" ]; then
+                  echo "Warning: Failed to assign AcrPush role"
+                  echo "This may impact the ability to push images to ACR"
+                else
+                  echo "Successfully granted AcrPush role"
+                fi
+              else
+                echo "Service principal already has AcrPush role on ACR"
               fi
             else
-              echo "Service principal already has AcrPull role on ACR"
+              echo "Warning: Could not find ACR $acr_name in current subscription"
+              echo "This may impact the ability to push images to ACR"
             fi
           else
-            echo "Skipping ACR role assignment since ACR resource ID was not found"
+            echo "Warning: Invalid ACR URL format: $full_registry_url"
+            echo "Expected format: name.azurecr.io"
           fi
 
       - name: Log in to Azure Container Registry
@@ -249,7 +195,68 @@ jobs:
           login-server: ${{ env.AZURE_CONTAINER_REGISTRY }}
           username: ${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }}
           password: ${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }}
+          
+      # Import images to ACR explicitly to make sure they are accessible
+      - name: Ensure Images Exist and Are Accessible
+        run: |
+          # Extract ACR name from the registry URL
+          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
+          acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
+          
+          # Check if images exist and are accessible
+          echo "Checking if images are accessible in ACR..."
+          
+          # List of services with their image tags
+          services=("loan-processing-service:${{ github.sha }}" "customer-service:${{ github.sha }}" "web-ui:${{ github.sha }}")
+          
+          for service in "${services[@]}"; do
+            echo "Checking image: $full_registry_url/$service"
+            
+            # Check if image exists
+            image_exists=$(az acr repository show --name "$acr_name" --image "$service" 2>/dev/null)
+            
+            if [ -z "$image_exists" ]; then
+              echo "Warning: Image $service not found in registry. This may be expected if this is the first run."
+            else
+              echo "Image $service found in registry."
+              
+              # Make sure image is accessible
+              echo "Verifying image accessibility..."
+              
+              # Pull the image manifest to check if it's accessible
+              manifest=$(az acr repository show-manifests --name "$acr_name" --repository "${service%%:*}" --query "[?contains(tags, '${service#*:}')].digest" -o tsv)
+              
+              if [ -n "$manifest" ]; then
+                echo "Successfully verified image manifest for $service"
+              else
+                echo "Warning: Could not access manifest for $service"
+              fi
+            fi
+          done
+          
+          # Verify ACR permissions for the managed identity
+          echo "Verifying ACR permissions for managed identity..."
+          identity_principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
+          acr_id=$(az acr show --name "$acr_name" --query id -o tsv)
+          
+          if [ -n "$identity_principal_id" ] && [ -n "$acr_id" ]; then
+            role_assignments=$(az role assignment list --assignee "$identity_principal_id" --scope "$acr_id" --query "[].roleDefinitionName" -o tsv)
+            echo "Current role assignments for managed identity on ACR: $role_assignments"
+            
+            # Check if the AcrPull role exists
+            if [[ "$role_assignments" != *"AcrPull"* ]]; then
+              echo "AcrPull role not found for managed identity. Creating role assignment..."
+              az role assignment create --assignee "$identity_principal_id" --role "AcrPull" --scope "$acr_id"
+              
+              # Wait for role propagation
+              echo "Waiting 60 seconds for role assignment to propagate..."
+              sleep 60
+            fi
+          else
+            echo "Error: Could not verify ACR permissions - missing identity principal ID or ACR resource ID"
+          fi
 
+      # Build and push Loan Processing Service (.NET)
       - name: Build and push Loan Processing Service (.NET)
         run: |
           cd loan-processing-service
@@ -378,77 +385,41 @@ jobs:
           fi
           
           # First run a what-if operation to check for potential issues
-          echo "Running what-if deployment validation..."
+          echo "Running what-if deployment validation..."          
           
-          # Extract ACR name from the registry URL for what-if
-          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
-          acr_in_same_rg="false"
-          if [[ $full_registry_url == *.azurecr.io ]]; then
-            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
-            acr_exists=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$acr_name'].id" -o tsv)
-            if [ -n "$acr_exists" ]; then
-              acr_in_same_rg="true"
-            fi
-          fi
-          
-          # Verify container registry and check permissions
-          echo "Verifying container registry permissions and network rules..."
-          if [[ -n "$acr_name" ]]; then
-            echo "Checking ACR $acr_name network rules..."
-            acr_network=$(az acr show --name "$acr_name" --query 'networkRuleSet.defaultAction' -o tsv 2>/dev/null || echo "")
-            echo "ACR network default action: $acr_network"
-            
-            # Check if managed identity has ACR Pull role
-            identity_principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
-            acr_id=$(az acr show --name "$acr_name" --query id -o tsv 2>/dev/null || echo "")
-            if [[ -n "$acr_id" && -n "$identity_principal_id" ]]; then
-              echo "Checking if managed identity has AcrPull role on ACR..."
-              role_assignments=$(az role assignment list --assignee "$identity_principal_id" --scope "$acr_id" --query "[?roleDefinitionName=='AcrPull'].roleDefinitionName" -o tsv)
-              if [ -z "$role_assignments" ]; then
-                echo "Managed identity does not have AcrPull role on ACR. Adding role assignment..."
-                az role assignment create --assignee "$identity_principal_id" --role "AcrPull" --scope "$acr_id"
-              else
-                echo "Managed identity already has AcrPull role on ACR."
-              fi
-            fi
-          fi
-          
-          echo "Running what-if deployment..."
-          az deployment group what-if \
+          echo "Running what-if deployment..."          az deployment group what-if \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
-              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \
-              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
+              azureAdAdminObjectId=${{ steps.get_current_user.outputs.object_id }} \              loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
-              assignAcrRoles=$acr_in_same_rg \
-              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }}
+              registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
+              registryUsername="${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }}" \
+              registryPassword="${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }}"
           
           # Now run the actual deployment with increased timeout and debugging
           echo "Running actual deployment..."
-          
-          # Check if ACR is in same resource group to determine if we should try to assign roles
-          acr_in_same_rg="false"
-          
-          # Extract ACR name from the registry URL
-          full_registry_url="${{ env.AZURE_CONTAINER_REGISTRY }}"
-          if [[ $full_registry_url == *.azurecr.io ]]; then
-            acr_name=$(echo "$full_registry_url" | sed -E 's/([^.]+).azurecr.io/\1/')
-            echo "Checking if ACR '$acr_name' exists in resource group ${{ env.RESOURCE_GROUP }}..."
-            acr_exists=$(az acr list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$acr_name'].id" -o tsv)
-            if [ -n "$acr_exists" ]; then
-              echo "ACR exists in same resource group, will assign roles"
-              acr_in_same_rg="true"
-            fi
-          fi
+          echo "Using key-based authentication for container registry access."
           
           # Deploy with debug logging enabled
           az config set core.collect_telemetry=yes
           az config set extension.use_dynamic_install=yes_without_prompt
+                    
+          # Verify registry credentials are set
+          if [[ -z "${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }}" ]]; then
+            echo "ERROR: Registry username is not set. This will cause deployment to fail."
+            exit 1
+          fi
           
-          echo "Starting Bicep deployment with verbose logging..."
-          az deployment group create \
+          if [[ -z "${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }}" ]]; then
+            echo "ERROR: Registry password is not set. This will cause deployment to fail."
+            exit 1
+          else
+            echo "Registry credentials are set and ready for deployment."
+          fi
+          
+          echo "Starting Bicep deployment with verbose logging..."          az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters \
@@ -456,8 +427,9 @@ jobs:
               loanProcessingImage=${{ env.AZURE_CONTAINER_REGISTRY }}/loan-processing-service:${{ github.sha }} \
               customerServiceImage=${{ env.AZURE_CONTAINER_REGISTRY }}/customer-service:${{ github.sha }} \
               webUiImage=${{ env.AZURE_CONTAINER_REGISTRY }}/web-ui:${{ github.sha }} \
-              assignAcrRoles=$acr_in_same_rg \
               registryServer=${{ env.AZURE_CONTAINER_REGISTRY }} \
+              registryUsername="${{ env.AZURE_CONTAINER_REGISTRY_USERNAME }}" \
+              registryPassword="${{ env.AZURE_CONTAINER_REGISTRY_PASSWORD }}" \
             --name $DEPLOYMENT_NAME \
             --verbose \
             --debug \
@@ -537,6 +509,73 @@ jobs:
             echo "Checking Azure activity logs for deployment errors..."
             az monitor.activity-log list --resource-group ${{ env.RESOURCE_GROUP }} --correlation-id $(jq -r '.properties.correlationId' deployment-full.json) --max-events 10
 
+      - name: Check Container App Health and Debug Images
+        id: check_container_apps
+        run: |
+          echo "Checking container app status and logs..."
+          
+          # Loop through our container apps to check their status
+          for app in loan-processing-service customer-service web-ui; do
+            # Check if app exists first to avoid errors
+            app_exists=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='$app'].id" -o tsv)
+            
+            if [ -n "$app_exists" ]; then
+              echo "===== Container App: $app ====="
+              
+              # Get container app status
+              echo "Status:"
+              az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.provisioningState" -o tsv
+              
+              # Get latest revision status
+              echo "Latest revision status:"
+              latest_revision=$(az containerapp revision list --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "[-1].name" -o tsv)
+              if [ -n "$latest_revision" ]; then
+                az containerapp revision show --name $app --revision $latest_revision --resource-group ${{ env.RESOURCE_GROUP }} --query "{name: name, createdTime: properties.createdTime, fqdn: properties.fqdn, status: properties.status, healthState: properties.healthState, message: properties.message}" -o json
+              else
+                echo "No revisions found for $app"
+              fi
+              
+              # Try to get logs, but don't fail if there are none
+              echo "Logs (last 50 lines):"
+              az containerapp logs show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --tail 50 || echo "No logs available for $app"
+              
+              # For container registry issues, check registry credentials
+              echo "Registry configuration:"
+              az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.configuration.registries" -o json || echo "No registry configuration found"
+              
+              # Check if managed identity is properly configured
+              echo "Identity configuration:"
+              az containerapp show --name $app --resource-group ${{ env.RESOURCE_GROUP }} --query "identity" -o json || echo "No identity configuration found"
+              
+              echo "=============================="
+            else
+              echo "Container app $app not found - it may have failed to create"
+            fi
+          done
+          
+          # Check registry access directly
+          echo "Testing registry access with different credentials..."
+          
+          # Extract ACR details
+          acr_name=$(echo "${{ env.AZURE_CONTAINER_REGISTRY }}" | sed -E 's/([^.]+).azurecr.io/\1/')
+          
+          if [ -n "$acr_name" ]; then
+            # Test system-assigned identity from runner (if possible)
+            echo "Testing ACR access using current credentials:"
+            az acr repository list --name "$acr_name" || echo "Cannot access ACR with current credentials"
+            
+            # Try to get diagnostic info about the images
+            echo "Checking image availability in ACR:"
+            az acr repository show --name "$acr_name" --image "loan-processing-service:${{ github.sha }}" || echo "Image loan-processing-service:${{ github.sha }} not found or not accessible"
+            
+            # Check if the managed identity can access the registry
+            identity_principal_id=$(az identity show --name mortgageapp-identity --resource-group ${{ env.RESOURCE_GROUP }} --query 'principalId' -o tsv)
+            if [ -n "$identity_principal_id" ]; then
+              echo "Checking role assignments for managed identity on ACR:"
+              az role assignment list --assignee "$identity_principal_id" --query "[?contains(scope, '$acr_name')].{role:roleDefinitionName, scope:scope}" -o json
+            fi
+          fi
+          
       - name: Get Storage, SQL Server, and SQL DB Names from Bicep Outputs
         id: get_resource_names
         run: |

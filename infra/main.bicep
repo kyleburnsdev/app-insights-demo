@@ -13,6 +13,10 @@ param location string = resourceGroup().location
 param azureAdAdminObjectId string
 param azureAdAdminLogin string = 'AzureAD Admin'
 
+// Container registry configuration
+// Using key-based authentication for container registry since managed identity isn't working
+// We've removed the managed identity parameters since we're now exclusively using key-based auth
+
 var sqlServerName = uniqueString(resourceGroup().id, 'sqlserver')
 var sqlDbName = 'mortgageappdb'
 var storageAccountName = uniqueString(resourceGroup().id, 'storage')
@@ -150,23 +154,18 @@ param loanProcessingImage string
 param customerServiceImage string
 param webUiImage string
 param registryServer string
+param registryUsername string = 'ContainerAppsPlatformAdmin'
+@secure()
+param registryPassword string = ''
 
-// Extract ACR name from registry server - assumes standard Azure Container Registry pattern
-var registryParts = split(registryServer, '.')
-var isAzureCrIo = length(registryParts) >= 3 && registryParts[1] == 'azurecr' && registryParts[2] == 'io'
-var registryName = isAzureCrIo ? registryParts[0] : registryServer
-// This is used for role assignments; if the registry is in another subscription/resource group, role assignments will need manual setup
-var acrResourceId = '/subscriptions/${subscription().subscriptionId}/resourceGroups/${resourceGroup().name}/providers/Microsoft.ContainerRegistry/registries/${registryName}'
+// Note: Since we're now using key-based authentication for ACR, we don't need to extract the registry name or create an acrResourceId anymore
 
 // Loan Processing Service
 resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'loan-processing-service'
   location: location  // Dependencies on managedIdentity and containerEnv are automatically inferred
   identity: {
-    type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${managedIdentity.id}': {}
-    }
+    type: 'SystemAssigned'  // Only using system-assigned identity for the app itself, not for ACR
   }
   properties: {
     managedEnvironmentId: containerEnv.id
@@ -181,10 +180,16 @@ resource loanProcessingApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryServer
-          identity: resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', managedIdentityName)
+          username: registryUsername
+          passwordSecretRef: 'registry-password'
         }
       ]
-      secrets: []
+      secrets: [
+        {
+          name: 'registry-password'
+          value: registryPassword
+        }
+      ]
       activeRevisionsMode: 'Single'      // Set increased timeout for startup operations
       dapr: {
         enabled: false
@@ -265,10 +270,7 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'customer-service'
   location: location
   identity: {
-    type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${managedIdentity.id}': {}
-    }
+    type: 'SystemAssigned'  // Only using system-assigned identity for the app itself, not for ACR
   }
   properties: {
     managedEnvironmentId: containerEnv.id
@@ -282,10 +284,16 @@ resource customerServiceApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryServer
-          identity: resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', managedIdentityName)
+          username: registryUsername
+          passwordSecretRef: 'registry-password'
         }
       ]
-      secrets: []
+      secrets: [
+        {
+          name: 'registry-password'
+          value: registryPassword
+        }
+      ]
       activeRevisionsMode: 'Single'
       dapr: {
         enabled: false
@@ -346,7 +354,7 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'web-ui'
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned'  // Only using system-assigned identity for the app itself, not for ACR
   }
   properties: {
     managedEnvironmentId: containerEnv.id
@@ -359,10 +367,16 @@ resource webUiApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryServer
-          identity: 'system'
+          username: registryUsername
+          passwordSecretRef: 'registry-password'
         }
       ]
-      secrets: []
+      secrets: [
+        {
+          name: 'registry-password'
+          value: registryPassword
+        }
+      ]
       activeRevisionsMode: 'Single'
       dapr: {
         enabled: false
@@ -424,41 +438,15 @@ resource loadTest 'Microsoft.LoadTestService/loadTests@2022-12-01' = {
   location: location
 }
 
-// Check if the ACR is expected to be in this resource group (only assign roles if it is)
-param assignAcrRoles bool = true
+// Note: We've removed role assignments for AcrPull because we're now using key-based authentication 
+// (registry username/password) for container apps to pull images from ACR.
+// This is more reliable and works across subscriptions and resource groups.
 
-// Add ACR pull role assignment for loan processing service
-resource loanProcessingAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAcrRoles) {
-  name: guid(loanProcessingApp.id, acrResourceId, 'AcrPull')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
-    principalId: loanProcessingApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Add ACR pull role assignment for customer service
-resource customerServiceAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAcrRoles) {
-  name: guid(customerServiceApp.id, acrResourceId, 'AcrPull')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
-    principalId: customerServiceApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Add ACR pull role assignment for web UI
-resource webUiAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (assignAcrRoles) {
-  name: guid(webUiApp.id, acrResourceId, 'AcrPull')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
-    principalId: webUiApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
+// Removed parameter and role assignments:
+// - param assignAcrRoles
+// - loanProcessingAcrPullRole resource
+// - customerServiceAcrPullRole resource
+// - webUiAcrPullRole resource
 
 output sqlServerName string = sqlServer.name
 output sqlDbName string = sqlDb.name
